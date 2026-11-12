@@ -61,8 +61,9 @@ void main() {
     }
 
     Future<void> back() async {
-      await tester.pageBack();
-      await wait(0.8);
+      // Pop the top screen directly: looking for the back button is flaky on iOS.
+      await tester.state<NavigatorState>(find.byType(Navigator).first).maybePop();
+      await wait(1.0);
     }
 
     Future<void> closeSheet() async {
