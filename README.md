@@ -6,6 +6,18 @@ the same protocol.
 
 > **v0.2, early.** Works against the built-in simulator; real-node testing in progress.
 
+| Chats | Channel | Contact |
+|---|---|---|
+| ![Chats](docs/chats.png) | ![Channel](docs/channel.png) | ![Contact](docs/contact.png) |
+| **Map** | **Trace a message** | **Relay graph** |
+| ![Map](docs/map.png) | ![Trace](docs/trace.png) | ![Network](docs/network.png) |
+| **Dashboard** | **Packet waterfall** | **Repeater status** |
+| ![Dashboard](docs/dashboard.png) | ![Waterfall](docs/waterfall.png) | ![Repeater](docs/repeater.png) |
+| **Repeater console** | | |
+| ![Console](docs/console.png) | | |
+
+<sub>iOS Simulator, running against the built-in pretend node.</sub>
+
 - Channels and direct messages, with unread counts and `@[Name]` mentions highlighted
 - Replies: long-press a channel message
 - Repeats: how many relayed copies your node heard of each message, which repeaters relayed it, which you heard
@@ -24,7 +36,6 @@ the same protocol.
   reset route; always flood
 - Add `#hashtag` or private channels, remove channels (long-press)
 - Zero-hop or flood adverts; sets the node's clock if it's behind
-- Live packet feed on the Node tab
 - Messages saved per node on the phone; reconnects by itself when the link drops
 - Light and dark themes that follow the phone
 - A simulator (**Try the simulator** on the connect screen) to try it with no radio
