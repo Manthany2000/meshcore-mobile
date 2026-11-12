@@ -4,14 +4,24 @@ A phone chat app for a MeshCore node running companion firmware, over Bluetooth 
 companion to [MeshCore Desktop](https://github.com/Manthany2000/meshcore-desktop), built with Flutter and speaking
 the same protocol.
 
-> **v0.1, early.** Works against the built-in simulator; real-node testing in progress.
+> **v0.2, early.** Works against the built-in simulator; real-node testing in progress.
 
 - Channels and direct messages, with unread counts and `@[Name]` mentions highlighted
 - Replies: long-press a channel message
 - Repeats: how many relayed copies your node heard of each message, which repeaters relayed it, which you heard
   directly and at what SNR, and the path it took (tap a message)
 - Delivery status on DMs (✓ on air, ✓✓ delivered with round-trip time, ✗ no ack; long-press → send again)
-- Contacts with type, hops, distance and last heard; route shown by repeater name; reset route; always flood
+- **Map**: contacts by type on OpenStreetMap with filters (type, last heard), search and labels; every flood your
+  node hears runs its path across the map; show a contact's stored route
+- **Trace message**: long-press a received message (or open its details) → *Trace on map* draws the path it took in red
+- **Network**: a graph of who relays through whom; tap a node to light up its links
+- **Dashboard**: nodes heard, repeaters, messages and packets; busiest repeaters; channel activity; live packets
+- **Packet waterfall**, like an SDR's: each packet lands by its SNR and scrolls down; tap it for the big one with
+  axes, minutes of history, and tap a spot for its packet
+- **Repeater management**: log in, status (battery, uptime, noise, counters) with live refresh, battery/noise/RSSI
+  history charts, a console with presets, read and apply settings, adverts, reset route
+- Contacts with type, hops, distance and last heard; full details (route by repeater name, bearing, SNR, key);
+  reset route; always flood
 - Add `#hashtag` or private channels, remove channels (long-press)
 - Zero-hop or flood adverts; sets the node's clock if it's behind
 - Live packet feed on the Node tab

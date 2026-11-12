@@ -136,13 +136,16 @@ class _WaterfallStripState extends State<WaterfallStrip> {
         ),
         const SizedBox(height: 4),
         Row(children: [
-          Text('−20 dB', style: Theme.of(context).textTheme.labelSmall),
-          const Spacer(),
-          Text(
-            '${lastMin.length} packets last minute${snr == null ? '' : ' · avg ${snr.toStringAsFixed(1)} dB'} · tap to expand',
-            style: Theme.of(context).textTheme.labelSmall,
+          Text('−20', style: Theme.of(context).textTheme.labelSmall),
+          Expanded(
+            child: Text(
+              '${lastMin.length}/min${snr == null ? '' : ' · avg ${snr.toStringAsFixed(1)} dB'} · tap to expand',
+              textAlign: TextAlign.center,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.labelSmall,
+            ),
           ),
-          const Spacer(),
           Text('+15 dB', style: Theme.of(context).textTheme.labelSmall),
         ]),
       ]),

@@ -129,7 +129,7 @@ Future<void> showContact(BuildContext context, AppState app, p.Contact c) {
                   onChanged: (v) => m.setAlwaysFlood(cur.prefixHex, v),
                 ),
               _Section('Reach', [
-                ('Route', cur.hops < 0 ? 'No known route: floods' : cur.hops == 0 ? 'Direct neighbour' : '${cur.hops} hops'),
+                ('Route', cur.hops < 0 ? 'No known route: floods' : cur.hops == 0 ? 'Direct neighbour' : hopsText(cur.hops)),
                 ('Last heard', agoLong(m.contactAge(cur))),
                 ('Last advert', stamp(cur.lastAdvert)),
                 ('Contact updated', stamp(cur.lastMod)),

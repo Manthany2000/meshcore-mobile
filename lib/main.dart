@@ -194,12 +194,12 @@ class _ConnectScreenState extends State<ConnectScreen> {
       }, onDone: () {
         if (mounted) setState(() => scanning = false);
       }, onError: (e) {
-        if (mounted) setState(() => scanError = '$e');
+        if (mounted) setState(() => scanError = _bleProblem(e));
       });
     } catch (e) {
       if (mounted) {
         setState(() {
-          scanError = '$e';
+          scanError = _bleProblem(e);
           scanning = false;
         });
       }
@@ -272,6 +272,15 @@ class _ConnectScreenState extends State<ConnectScreen> {
       ),
     );
   }
+}
+
+/// A scan failure in words, not a platform exception.
+String _bleProblem(Object e) {
+  final t = '$e';
+  if (t.contains('Unsupported')) return "This device has no Bluetooth LE (a simulator?). Try the simulator below.";
+  if (t.contains('Unauthorized') || t.contains('unauthorized')) return 'Allow Bluetooth for MeshCore Mobile in Settings.';
+  if (t.contains('turned on') || t.contains('PoweredOff')) return 'Bluetooth is off. Turn it on and scan again.';
+  return t.startsWith('PlatformException(') ? 'Couldn\'t scan: ${t.split(', ').skip(1).first}' : t;
 }
 
 String linkStateText(Session? s) {
