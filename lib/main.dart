@@ -8,6 +8,7 @@ import 'src/session.dart';
 import 'src/sim.dart';
 import 'src/transport.dart';
 import 'src/ui/home.dart';
+import 'src/ui/map.dart' show MapRequest;
 
 void main(List<String> args) {
   FlutterBluePlus.setLogLevel(LogLevel.warning);
@@ -22,6 +23,18 @@ class AppState extends ChangeNotifier {
   Timer? _retry;
   String? error;
   bool get linked => session != null;
+  final navigator = GlobalKey<NavigatorState>();
+  final tab = ValueNotifier<int>(0);
+  final mapRequest = ValueNotifier<MapRequest?>(null);
+
+  static const mapTab = 1;
+
+  /// Back to the tabs, on the Map, showing what was asked for.
+  void showOnMap(MapRequest r) {
+    navigator.currentState?.popUntil((route) => route.isFirst);
+    tab.value = mapTab;
+    mapRequest.value = r;
+  }
 
   Future<void> connect(Transport Function() make) async {
     _make = make;
@@ -84,6 +97,7 @@ class AppState extends ChangeNotifier {
     await s?.stop().catchError((_) {});
     model.reset();
     model.selfInfo = null;
+    tab.value = 0;
     notifyListeners();
   }
 }
@@ -121,6 +135,7 @@ class _MeshCoreAppState extends State<MeshCoreApp> {
           useMaterial3: true,
         );
     return MaterialApp(
+      navigatorKey: app.navigator,
       title: 'MeshCore Mobile',
       debugShowCheckedModeBanner: false,
       theme: theme(Brightness.light),

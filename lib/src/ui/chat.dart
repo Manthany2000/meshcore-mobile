@@ -7,7 +7,8 @@ import '../model.dart';
 import '../protocol.dart' as p;
 import '../session.dart';
 import 'common.dart';
-import 'home.dart' show showContact;
+import 'contact_sheet.dart';
+import 'map.dart';
 
 class ChatScreen extends StatefulWidget {
   final AppState app;
@@ -190,6 +191,15 @@ class _ChatScreenState extends State<ChatScreen> {
                 widget.app.session?.resend(msg);
               },
             ),
+          if (!msg.outgoing)
+            ListTile(
+              leading: const Icon(Icons.route),
+              title: const Text('Trace on map'),
+              onTap: () {
+                Navigator.pop(ctx);
+                widget.app.showOnMap(TraceRequest(msg));
+              },
+            ),
           ListTile(
             leading: const Icon(Icons.info_outline),
             title: const Text('Details'),
@@ -223,6 +233,19 @@ class _ChatScreenState extends State<ChatScreen> {
               constraints: BoxConstraints(maxHeight: MediaQuery.of(ctx).size.height * 0.7),
               child: ListView(shrinkWrap: true, padding: const EdgeInsets.fromLTRB(16, 0, 16, 16), children: [
                 Text(msg.text, style: Theme.of(ctx).textTheme.bodyLarge),
+                const SizedBox(height: 8),
+                if (!msg.outgoing)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: FilledButton.tonalIcon(
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        widget.app.showOnMap(TraceRequest(msg));
+                      },
+                      icon: const Icon(Icons.route),
+                      label: const Text('Trace on map'),
+                    ),
+                  ),
                 const SizedBox(height: 12),
                 _row(ctx, 'From', msg.outgoing ? 'You' : msg.sender),
                 _row(ctx, 'Time', shortTime(msg.at, seconds: true)),

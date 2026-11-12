@@ -8,6 +8,7 @@ on:
 jobs:
   ios:
     runs-on: macos-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
@@ -26,16 +27,30 @@ jobs:
           echo "UDID=$UDID" >> $GITHUB_ENV
           xcrun simctl boot "$UDID"
           xcrun simctl bootstatus "$UDID" -b
-          # A tidy status bar for the shots.
+          # A tidy status bar, and Bluetooth already allowed so no prompt covers the app.
           xcrun simctl status_bar "$UDID" override --time 9:41 --batteryState charged --batteryLevel 100 --cellularBars 4 --wifiBars 3
+          xcrun simctl privacy "$UDID" grant bluetooth io.github.manthany2000.meshcoreMobile || true
+          mkdir -p "$GITHUB_WORKSPACE/screenshots"
       - name: Light mode
+        timeout-minutes: 12
         run: |
           xcrun simctl ui "$UDID" appearance light
-          flutter drive --driver test_driver/integration_test.dart --target integration_test/screenshots_test.dart -d "$UDID" --dart-define=SHOT_PREFIX=light
+          flutter test integration_test/screenshots_test.dart -d "$UDID" \
+            --dart-define=SHOT_PREFIX=light --dart-define=SHOT_DIR="$GITHUB_WORKSPACE/screenshots"
       - name: Dark mode
+        timeout-minutes: 12
         run: |
           xcrun simctl ui "$UDID" appearance dark
-          flutter drive --driver test_driver/integration_test.dart --target integration_test/screenshots_test.dart -d "$UDID" --dart-define=SHOT_PREFIX=dark
+          flutter test integration_test/screenshots_test.dart -d "$UDID" \
+            --dart-define=SHOT_PREFIX=dark --dart-define=SHOT_DIR="$GITHUB_WORKSPACE/screenshots"
+      - name: Collect from the app, if the host folder stayed empty
+        if: always()
+        run: |
+          ls screenshots | head -50
+          if [ -z "$(ls screenshots)" ]; then
+            C=$(xcrun simctl get_app_container "$UDID" io.github.manthany2000.meshcoreMobile data) && cp "$C"/Documents/screenshots/*.png screenshots/ || true
+          fi
+          ls -la screenshots
       - uses: actions/upload-artifact@v4
         if: always()
         with:

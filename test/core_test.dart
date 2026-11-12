@@ -34,6 +34,27 @@ void main() {
           '200323746573740000000000000000000000000000000000000000000000000000009cd8fcf22a47333b591d96a2b848b73f');
     });
 
+    test('login', () {
+      expect(p.hex(p.login(List.generate(32, (i) => i), 'secretpass')),
+          '1a000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f73656372657470617373');
+    });
+
+    test('cli', () {
+      expect(p.hex(p.sendCli([0, 1, 2, 3, 4, 5], 1762800000, 'get name')), '02010080311269000102030405676574206e616d65');
+    });
+
+    test('repeater status', () {
+      final f = p.decode(Uint8List.fromList([0x87, 0, 0, 1, 2, 3, 4, 5,
+        ...p.unhex('930f010090ffb9ff55bc00007555000032070000b94a060050460000250f0000409c00001520000002001a000f00a2030014000003000000')]))!;
+      expect(f.kind, 'status');
+      expect(f['stats'], {
+        'batt_mv': 3987, 'tx_queue': 1, 'noise_floor': -112, 'last_rssi': -71, 'recv': 48213, 'sent': 21877,
+        'air_secs': 1842, 'up_secs': 412345, 'sent_flood': 18000, 'sent_direct': 3877, 'recv_flood': 40000,
+        'recv_direct': 8213, 'errors': 2, 'last_snr': 6.5, 'direct_dups': 15, 'flood_dups': 930, 'rx_air_secs': 5120,
+        'recv_errors': 3,
+      });
+    });
+
     test('channel message split', () {
       final f = p.decode(Uint8List.fromList([p.respChannelMsgV3, 26, 0, 0, 1, 2, 0, 0, 0, 0, 0, ...'bob: hi: there'.codeUnits]))!;
       final m = f['msg'] as p.TextMessage;
@@ -88,6 +109,25 @@ void main() {
       await Future.delayed(const Duration(seconds: 12));
       expect(m.status, anyOf(MsgStatus.delivered, MsgStatus.noAck));
     }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test('repeater login, status and CLI', () async {
+      final ridge = model.contacts.values.firstWhere((c) => c.name == 'Ridge Repeater');
+      expect((await s.login(ridge.key, 'wrong'))!.kind, 'login_fail');
+      final ok = (await s.login(ridge.key, 'admin'))!;
+      expect((ok.kind, ok['is_admin']), ('login_ok', true));
+      final st = (await s.repeaterStatus(ridge.key))!;
+      expect(st['stats']['batt_mv'], greaterThan(3800));
+      final r = (await s.cli(ridge.key, 'get name'))!;
+      expect((r['msg'] as p.TextMessage).text, '> Ridge Repeater');
+      // CLI replies aren't conversation.
+      expect(model.messages.where((m) => m.text.contains('Ridge Repeater')), isEmpty);
+    }, timeout: const Timeout(Duration(seconds: 30)));
+
+    test('mesh links and stats', () async {
+      final (w, l) = model.meshLinks();
+      expect(w['me'], greaterThan(0));
+      expect(l, isNotEmpty);
+    });
 
     test('history survives a restart', () async {
       await s.send(chanConv(0), 'keep me');

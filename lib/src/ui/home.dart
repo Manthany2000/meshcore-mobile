@@ -12,6 +12,9 @@ import '../protocol.dart' as p;
 import '../session.dart';
 import 'chat.dart';
 import 'common.dart';
+import 'contact_sheet.dart';
+import 'dashboard.dart';
+import 'map.dart';
 
 class HomeScreen extends StatefulWidget {
   final AppState app;
@@ -22,7 +25,6 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  int tab = 0;
   StreamSubscription? _newContacts;
 
   @override
@@ -48,7 +50,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final app = widget.app;
     final m = app.model;
     return ListenableBuilder(
-      listenable: Listenable.merge([app, m]),
+      listenable: Listenable.merge([app, m, app.tab]),
       builder: (context, _) {
         final s = app.session;
         final unread = [for (final c in m.channels.keys) chanConv(c), ...m.dmConvs()].fold(0, (a, c) => a + m.unread(c));
@@ -70,21 +72,26 @@ class _HomeScreenState extends State<HomeScreen> {
                 ? PreferredSize(preferredSize: const Size.fromHeight(32), child: _LinkBanner(app: app))
                 : null,
           ),
-          body: IndexedStack(index: tab, children: [
+          body: IndexedStack(index: app.tab.value, children: [
             ChatsTab(app: app),
+            MapTab(app: app),
             ContactsTab(app: app),
+            DashboardTab(app: app),
             NodeTab(app: app),
           ]),
           bottomNavigationBar: NavigationBar(
-            selectedIndex: tab,
-            onDestinationSelected: (i) => setState(() => tab = i),
+            selectedIndex: app.tab.value,
+            labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+            onDestinationSelected: (i) => app.tab.value = i,
             destinations: [
               NavigationDestination(
                 icon: Badge(isLabelVisible: unread > 0, label: Text('$unread'), child: const Icon(Icons.forum_outlined)),
                 selectedIcon: const Icon(Icons.forum),
                 label: 'Chats',
               ),
+              const NavigationDestination(icon: Icon(Icons.map_outlined), selectedIcon: Icon(Icons.map), label: 'Map'),
               const NavigationDestination(icon: Icon(Icons.people_outline), selectedIcon: Icon(Icons.people), label: 'Contacts'),
+              const NavigationDestination(icon: Icon(Icons.insights_outlined), selectedIcon: Icon(Icons.insights), label: 'Dashboard'),
               const NavigationDestination(icon: Icon(Icons.router_outlined), selectedIcon: Icon(Icons.router), label: 'Node'),
             ],
           ),
@@ -192,6 +199,8 @@ class _ConvTile extends StatelessWidget {
     );
   }
 }
+
+void openChatFromAnywhere(BuildContext context, AppState app, String conv) => openChat(context, app, conv);
 
 void openChat(BuildContext context, AppState app, String conv) {
   Navigator.of(context).push(MaterialPageRoute(builder: (_) => ChatScreen(app: app, conv: conv)));
@@ -363,68 +372,6 @@ class _ContactsTabState extends State<ContactsTab> {
       ),
     ]);
   }
-}
-
-Future<void> showContact(BuildContext context, AppState app, p.Contact c) {
-  final m = app.model;
-  return showModalBottomSheet(
-    context: context,
-    showDragHandle: true,
-    builder: (ctx) => ListenableBuilder(
-      listenable: m,
-      builder: (ctx, _) {
-        final cur = m.contacts[c.prefixHex] ?? c;
-        final route = cur.hops < 0
-            ? 'No stored route: messages flood'
-            : cur.hops == 0
-                ? 'Direct, no repeaters'
-                : cur.path.hops().map((h) => m.hopNames(p.hex(h)).firstOrNull ?? p.hex(h)).join(' → ');
-        return SafeArea(
-          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-            ListTile(
-              leading: CircleAvatar(child: Icon(typeIcon(cur.type))),
-              title: Text(cur.name, style: Theme.of(ctx).textTheme.titleMedium),
-              subtitle: Text('${typeName(cur.type)} · ${cur.prefixHex}'),
-            ),
-            ListTile(dense: true, leading: const Icon(Icons.alt_route), title: Text(hopsText(cur.hops)), subtitle: Text(route)),
-            if (cur.lat != 0 || cur.lon != 0)
-              ListTile(
-                dense: true,
-                leading: const Icon(Icons.place_outlined),
-                title: Text('${cur.lat.toStringAsFixed(4)}, ${cur.lon.toStringAsFixed(4)}'),
-                subtitle: m.distanceKm(cur) != null ? Text('${m.distanceKm(cur)!.toStringAsFixed(1)} km away') : null,
-              ),
-            const Divider(),
-            if (cur.type == p.advChat || cur.type == p.advRoom)
-              ListTile(
-                leading: const Icon(Icons.chat_bubble_outline),
-                title: const Text('Message'),
-                onTap: () {
-                  Navigator.pop(ctx);
-                  openChat(context, app, dmConv(cur.key));
-                },
-              ),
-            ListTile(
-              leading: const Icon(Icons.waves),
-              title: const Text('Reset route'),
-              subtitle: const Text('The next message floods; their reply sets a fresh route'),
-              onTap: () async {
-                final f = await app.session?.resetPath(cur.key);
-                if (ctx.mounted) toast(ctx, f?.kind == 'ok' ? 'Route reset' : 'Couldn\'t reset the route');
-              },
-            ),
-            if (cur.type == p.advChat)
-              SwitchListTile(
-                secondary: const Icon(Icons.all_inclusive),
-                title: const Text('Always flood messages'),
-                value: m.alwaysFloods(cur.prefixHex),
-                onChanged: (v) => m.setAlwaysFlood(cur.prefixHex, v),
-              ),
-          ]),
-        );
-      },
-    ),
-  );
 }
 
 // --- Node ---------------------------------------------------------------------------

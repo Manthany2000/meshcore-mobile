@@ -26,6 +26,8 @@ const cmdSyncNextMessage = 10;
 const cmdResetPath = 13;
 const cmdGetBattAndStorage = 20;
 const cmdDeviceQuery = 22;
+const cmdSendLogin = 26;
+const cmdSendStatusReq = 27;
 const cmdGetContactByKey = 30;
 const cmdGetChannel = 31;
 const cmdSetChannel = 32;
@@ -51,6 +53,9 @@ const pushAdvert = 0x80;
 const pushPathUpdated = 0x81;
 const pushSendConfirmed = 0x82;
 const pushMsgWaiting = 0x83;
+const pushLoginSuccess = 0x85;
+const pushLoginFail = 0x86;
+const pushStatusResponse = 0x87;
 const pushLogRx = 0x88;
 const pushNewAdvert = 0x8A;
 
@@ -260,6 +265,32 @@ TextMessage? _decodeChannelMsg(Uint8List b, double? snr) {
       snr: snr);
 }
 
+// struct RepeaterStats in examples/simple_repeater/MyMesh.h. Older firmware
+// sends a shorter one, so missing fields read as zero.
+const _statsLayout = [
+  ('batt_mv', 2, false), ('tx_queue', 2, false), ('noise_floor', 2, true), ('last_rssi', 2, true),
+  ('recv', 4, false), ('sent', 4, false), ('air_secs', 4, false), ('up_secs', 4, false),
+  ('sent_flood', 4, false), ('sent_direct', 4, false), ('recv_flood', 4, false), ('recv_direct', 4, false),
+  ('errors', 2, false), ('last_snr', 2, true), ('direct_dups', 2, false), ('flood_dups', 2, false),
+  ('rx_air_secs', 4, false), ('recv_errors', 4, false),
+];
+
+Map<String, num> decodeStatus(Uint8List b) {
+  final size = _statsLayout.fold(0, (a, e) => a + e.$2);
+  final buf = Uint8List(size)..setRange(0, b.length < size ? b.length : size, b);
+  final bd = ByteData.sublistView(buf);
+  final out = <String, num>{};
+  var at = 0;
+  for (final (k, n, signed) in _statsLayout) {
+    out[k] = n == 2
+        ? (signed ? bd.getInt16(at, Endian.little) : bd.getUint16(at, Endian.little))
+        : (signed ? bd.getInt32(at, Endian.little) : bd.getUint32(at, Endian.little));
+    at += n;
+  }
+  out['last_snr'] = out['last_snr']! / 4.0;
+  return out;
+}
+
 /// null if it's too short for its code. Unknown codes give kind 'other'.
 Frame? decode(Uint8List b) {
   if (b.isEmpty) return null;
@@ -339,6 +370,15 @@ Frame? decode(Uint8List b) {
       return n >= 7 ? f('advert', {'key': _sub(b, 1, 33)}) : null;
     case pushPathUpdated:
       return n >= 33 ? f('path_updated', {'key': _sub(b, 1, 33)}) : null;
+    case pushLoginSuccess:
+      // code, is_admin, key[6], then on current firmware: server time, acl, fw level.
+      // Old repeaters send only the prefix and can't say whether we're admin.
+      if (n < 8) return null;
+      return f('login_ok', {'prefix': _sub(b, 2, 8), 'is_admin': n >= 12 ? b[1] != 0 : null});
+    case pushLoginFail:
+      return n >= 8 ? f('login_fail', {'prefix': _sub(b, 2, 8)}) : null;
+    case pushStatusResponse:
+      return n > 8 ? f('status', {'prefix': _sub(b, 2, 8), 'stats': decodeStatus(_sub(b, 8))}) : null;
     case pushLogRx:
       final r = _decodeLogRx(b);
       return r != null ? f('log_rx', {'raw': r}) : f('other'); // odd packets on the air aren't an error
@@ -389,6 +429,28 @@ Uint8List sendDirect(List<int> prefix, int ts, String text, [int attempt = 0]) =
       _le32(ts),
       prefix.sublist(0, keyPrefix),
       utf8.encode(text)
+    ]);
+
+/// A command for a repeater we're logged in to. The reply comes back as a DM of type txtCli.
+Uint8List sendCli(List<int> prefix, int ts, String text) => _cat([
+      [cmdSendTxtMsg, txtCli, 0],
+      _le32(ts),
+      prefix.sublist(0, keyPrefix),
+      utf8.encode(text)
+    ]);
+
+Uint8List login(List<int> key, String password) {
+  final pw = utf8.encode(password);
+  return _cat([
+    [cmdSendLogin],
+    key.sublist(0, 32),
+    pw.length > passwordMax ? pw.sublist(0, passwordMax) : pw
+  ]);
+}
+
+Uint8List statusReq(List<int> key) => _cat([
+      [cmdSendStatusReq],
+      key.sublist(0, 32)
     ]);
 
 Uint8List setTime(int ts) => _cat([

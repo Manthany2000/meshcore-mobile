@@ -97,6 +97,8 @@ class Sim {
   };
   Timer? _timer;
   final _timers = <Timer>[];
+  final admins = <String>{}; // repeaters that have us on their admin list
+  final repeaterCfg = <String, Map<String, String>>{};
 
   List<SimNode> get repeaters => contacts.where((c) => c.type == p.advRepeater).toList();
 
@@ -233,6 +235,130 @@ class Sim {
 
   Uint8List _b(List<int> l) => Uint8List.fromList(l);
 
+  Uint8List _sent(int ack) => (BytesBuilder()
+        ..add([p.respSent, 0])
+        ..u32(ack)
+        ..u32(500))
+      .toBytes();
+
+  /// A repeater that answers. Library Roof never does, as if out of range.
+  SimNode? _repeater(List<int> keyOrPrefix) {
+    final c = _contact(keyOrPrefix);
+    return c == null || c.type != p.advRepeater || c.name == 'Library Roof' ? null : c;
+  }
+
+  void _login(Uint8List b) {
+    final k = b.sublist(1, 33), pw = utf8.decode(b.sublist(33));
+    _push(_sent(1));
+    if (_repeater(k) == null) return;
+    final px = p.hex(k.sublist(0, 6));
+    Uint8List ok(bool admin) => (BytesBuilder()
+          ..add([p.pushLoginSuccess, admin ? 1 : 0])
+          ..add(k.sublist(0, 6))
+          ..u32(clockNow())
+          ..add([admin ? 3 : 1, 8]))
+        .toBytes();
+    if (pw == 'admin' || (pw.isEmpty && admins.contains(px))) {
+      admins.add(px);
+      _push(ok(true), 0.4);
+    } else if (pw == 'guest') {
+      _push(ok(false), 0.4);
+    } else {
+      _push(_b([p.pushLoginFail, 0, ...k.sublist(0, 6)]), 0.4);
+    }
+  }
+
+  void _status(Uint8List b) {
+    final k = b.sublist(1, 33);
+    _push(_sent(2));
+    if (_repeater(k) == null) return;
+    // Counters that climb unevenly, so the history has something to draw.
+    final t = nowS() - _t0;
+    final rx = max(0, (t * .6 + 5 * sin(t / 20)).round()), tx = max(0, (t * .3 + 3 * sin(t / 13)).round());
+    final bd = ByteData(56);
+    var at = 0;
+    void u16(int v) {
+      bd.setUint16(at, v & 0xFFFF, Endian.little);
+      at += 2;
+    }
+
+    void i16(int v) {
+      bd.setInt16(at, v, Endian.little);
+      at += 2;
+    }
+
+    void u32(int v) {
+      bd.setUint32(at, v, Endian.little);
+      at += 4;
+    }
+
+    u16(3900 + rnd.nextInt(150));
+    u16(1);
+    i16(-112 + (3 * sin(t / 15)).round() + rnd.nextInt(3));
+    i16(-71);
+    u32(48213 + rx);
+    u32(21877 + tx);
+    u32(1842 + (t * .03).round());
+    u32(412345 + t.round());
+    u32(18000 + tx ~/ 2);
+    u32(3877 + tx ~/ 2);
+    u32(40000 + rx ~/ 2);
+    u32(8213 + rx ~/ 2);
+    u16(2);
+    i16(26);
+    u16(15);
+    u16(930 + rx ~/ 8);
+    u32(5120 + (t * .08).round());
+    u32(3);
+    _push(_b([p.pushStatusResponse, 0, ...k.sublist(0, 6), ...bd.buffer.asUint8List()]), 0.4);
+  }
+
+  void _cli(Uint8List b) {
+    final prefix = b.sublist(7, 13), cmd = utf8.decode(b.sublist(13));
+    _push(_sent(0));
+    final r = _repeater(prefix);
+    final px = p.hex(prefix);
+    if (r == null || !admins.contains(px)) return; // a real repeater ignores anyone but an admin
+    final cfg = repeaterCfg.putIfAbsent(px, () => {
+          'name': r.name,
+          'repeat': 'on',
+          'tx': '22',
+          'advert.interval': '120',
+          'flood.advert.interval': '12',
+          'flood.max': '64',
+          'lat': '${r.lat}',
+          'lon': '${r.lon}',
+          'owner.info': '',
+        });
+    final parts = cmd.split(' ');
+    String reply;
+    if (parts.length == 2 && parts[0] == 'get' && cfg.containsKey(parts[1])) {
+      reply = '> ${cfg[parts[1]]}';
+    } else if (parts.length >= 3 && parts[0] == 'set' && cfg.containsKey(parts[1])) {
+      cfg[parts[1]] = parts.sublist(2).join(' ');
+      reply = parts[1] == 'repeat' ? 'OK - repeat is now ${cfg['repeat']!.toUpperCase()}' : 'OK';
+    } else {
+      reply = const {
+            'ver': 'v1.11.0 (Build: 05-Nov-2026)',
+            'clock': '12:00 - 8/11/2026 UTC',
+            'board': 'Heltec V3',
+            'neighbors': 'A1B2C3D4:42:26\n99F0E1AA:310:-8',
+            'advert': 'OK - Advert sent',
+            'advert.zerohop': 'OK - zerohop advert sent',
+            'clock sync': 'OK - clock set',
+          }[cmd] ??
+          'Unknown command';
+    }
+    final m = BytesBuilder()
+      ..add([p.respContactMsgV3, 24, 0, 0])
+      ..add(prefix)
+      ..add([1, p.txtCli])
+      ..u32(clockNow())
+      ..add(utf8.encode(reply));
+    queue.add(m.toBytes());
+    _push(_b([p.pushMsgWaiting]), 0.5);
+  }
+
   void handle(Uint8List b) {
     final bd = ByteData.sublistView(b);
     switch (b[0]) {
@@ -300,6 +426,12 @@ class Sim {
         if (!channels.containsKey(ch)) return _push(_b([p.respErr, 2]));
         _push(_b([p.respOk]));
         _copies(p.payloadGrpTxt, p.encryptGroup(channels[ch]!.$2, ts, name, text));
+      case p.cmdSendLogin:
+        _login(b);
+      case p.cmdSendStatusReq:
+        _status(b);
+      case p.cmdSendTxtMsg when b[1] == p.txtCli:
+        _cli(b);
       case p.cmdSendTxtMsg:
         final dest = b.sublist(7, 13);
         final ack = rnd.nextInt(1 << 32);

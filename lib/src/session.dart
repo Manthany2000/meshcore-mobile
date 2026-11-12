@@ -35,6 +35,9 @@ class Session extends ChangeNotifier {
   bool _backlog = false;
   Timer? _tick;
   int _ticks = 0;
+  final _adminLock = _Lock();
+  (bool Function(p.Frame), Completer<p.Frame?>)? _adminWaiter;
+  double adminMinWait = 6; // seconds; the node's estimate can be tight for a reply
 
   Session(this.model, this.t) {
     t.onFrame = _frame;
@@ -67,6 +70,8 @@ class Session extends ChangeNotifier {
     if (f.code < 0x80 && w != null && (w.$1.contains(f.kind) || f.kind == 'err') && !w.$2.isCompleted) {
       w.$2.complete(f);
     }
+    final a = _adminWaiter;
+    if (a != null && !a.$2.isCompleted && a.$1(f)) a.$2.complete(f);
   }
 
   /// Sends a command and waits for its answer: one of [expect], or an error.
@@ -194,6 +199,49 @@ class Session extends ChangeNotifier {
       f = await request(p.sendDirect(m.dmPrefix, m.wireTime, m.text), {'sent'});
     }
     model.sendResult(m, f);
+  }
+
+  // --- repeater admin -----------------------------------------------------------
+
+  /// Sends a request to a remote node and waits for its answer. The node tracks
+  /// one such request at a time, so they run one after another. Gives the
+  /// answer, the node's "err" frame, or null if nothing came back in time.
+  Future<p.Frame?> _admin(Uint8List frame, bool Function(p.Frame) done) {
+    return _adminLock.run(() async {
+      // Set before sending, so a fast answer can't slip past.
+      final c = Completer<p.Frame?>();
+      _adminWaiter = (done, c);
+      try {
+        final sent = await request(frame, {'sent'});
+        if (sent == null || sent.kind == 'err') return sent;
+        final ms = (sent['timeout_ms'] as int) + 3000;
+        final wait = ms / 1000 > adminMinWait ? ms / 1000 : adminMinWait;
+        return await c.future.timeout(Duration(milliseconds: (wait * 1000).round()), onTimeout: () => null);
+      } finally {
+        _adminWaiter = null;
+      }
+    });
+  }
+
+  bool _from(p.Frame f, Uint8List prefix) => p.bytesEq(f['prefix'] as Uint8List, prefix);
+
+  Future<p.Frame?> login(Uint8List key, String password) {
+    final prefix = key.sublist(0, p.keyPrefix);
+    return _admin(p.login(key, password), (f) => (f.kind == 'login_ok' || f.kind == 'login_fail') && _from(f, prefix));
+  }
+
+  Future<p.Frame?> repeaterStatus(Uint8List key) {
+    final prefix = key.sublist(0, p.keyPrefix);
+    return _admin(p.statusReq(key), (f) => f.kind == 'status' && _from(f, prefix));
+  }
+
+  Future<p.Frame?> cli(Uint8List key, String command) {
+    final prefix = key.sublist(0, p.keyPrefix);
+    return _admin(p.sendCli(prefix, model.nodeNow(), command), (f) {
+      if (f.kind != 'message') return false;
+      final m = f['msg'] as p.TextMessage;
+      return m.txtType == p.txtCli && !m.isChannel && p.bytesEq(m.key, prefix);
+    });
   }
 
   Future<p.Frame?> advert(bool flood) => request(p.sendAdvert(flood), {'ok'});

@@ -141,6 +141,9 @@ class Model extends ChangeNotifier {
   final packets = <(double, p.RawPacket)>[]; // this session only
   final savedNames = <String, String>{};
   final floodAlways = <String>{};
+  final lastSnr = <String, double>{}; // prefix hex -> SNR of its latest message
+  /// prefix hex -> [(at, batt_mv, noise_floor, last_rssi)], oldest first
+  final repeaterHistory = <String, List<List<num>>>{};
   final newContacts = StreamController<p.Contact>.broadcast();
   int _nextId = 1;
   File? _file;
@@ -170,6 +173,7 @@ class Model extends ChangeNotifier {
     savedNames.clear();
     lastRead.clear();
     floodAlways.clear();
+    repeaterHistory.clear();
     if (await _file!.exists()) {
       try {
         final j = jsonDecode(await _file!.readAsString()) as Map<String, dynamic>;
@@ -179,6 +183,7 @@ class Model extends ChangeNotifier {
         (j['names'] as Map? ?? {}).forEach((k, v) => savedNames[k] = v);
         (j['reads'] as Map? ?? {}).forEach((k, v) => lastRead[k] = (v as num).toDouble());
         floodAlways.addAll((j['flood'] as List? ?? []).cast<String>());
+        (j['rstats'] as Map? ?? {}).forEach((k, v) => repeaterHistory[k] = [for (final r in v) (r as List).cast<num>()]);
         (j['channels'] as Map? ?? {}).forEach((k, v) => channels.putIfAbsent(int.parse(k), () => Channel(int.parse(k), v)));
       } catch (e) {
         debugPrint('history unreadable: $e');
@@ -204,6 +209,7 @@ class Model extends ChangeNotifier {
       'names': savedNames,
       'reads': lastRead,
       'flood': floodAlways.toList(),
+      'rstats': repeaterHistory,
       'channels': {for (final c in channels.values) '${c.idx}': c.name},
     };
     try {
@@ -355,6 +361,7 @@ class Model extends ChangeNotifier {
     final now = nowS();
     packets.add((now, pk));
     if (packets.length > 2000) packets.removeAt(0);
+    packetStream.add((now, pk));
     for (final m in messages.reversed) {
       if (now - m.at > repeatWindowS) break;
       if (!m.live) continue;
@@ -446,10 +453,12 @@ class Model extends ChangeNotifier {
     if (!live) messages.sort((a, b) => a.at.compareTo(b.at));
     if (!t.isChannel) {
       heard[p.hex(t.key)] = at;
+      if (t.snr != null) lastSnr[p.hex(t.key)] = t.snr!;
     } else {
       for (final c in contacts.values) {
         if (c.name == t.who) {
           heard[c.prefixHex] = at;
+          if (t.snr != null) lastSnr[c.prefixHex] = t.snr!;
           break;
         }
       }
@@ -459,6 +468,84 @@ class Model extends ChangeNotifier {
   }
 
   final incoming = StreamController<Message>.broadcast();
+  final packetStream = StreamController<(double, p.RawPacket)>.broadcast();
+
+  // --- repeater history -------------------------------------------------------
+
+  void recordRepeater(String prefixHex, Map<String, num> stats) {
+    final h = repeaterHistory.putIfAbsent(prefixHex, () => []);
+    h.add([nowS(), stats['batt_mv']!, stats['noise_floor']!, stats['last_rssi']!]);
+    if (h.length > 500) h.removeAt(0);
+    _changed();
+  }
+
+  // --- mesh statistics (dashboard, graph) --------------------------------------
+
+  /// How many saved messages each hop hash helped relay.
+  Map<String, int> relayCounts() {
+    final out = <String, int>{};
+    for (final m in messages) {
+      for (final h in m.repeaters.keys) {
+        out[h] = (out[h] ?? 0) + 1;
+      }
+    }
+    return out;
+  }
+
+  /// By hop hash, so repeaters sharing a one-byte hash count together.
+  List<(String, int)> busiestRepeaters([int limit = 8]) {
+    final e = relayCounts().entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+    return [for (final x in e.take(limit)) (hopNames(x.key).firstOrNull ?? x.key, x.value)];
+  }
+
+  List<(String, int)> channelActivity() {
+    final now = nowS();
+    final counts = <String, int>{};
+    for (final m in messages) {
+      if (m.isChannel && now - m.at < 7 * 86400) counts[m.conv] = (counts[m.conv] ?? 0) + 1;
+    }
+    final e = counts.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
+    return [for (final x in e.take(8)) (convTitle(x.key), x.value)];
+  }
+
+  /// Node weights and links among repeaters and us ('me'), from message and
+  /// contact paths. Hops are hash prefixes, so a shared hash shows as one node.
+  (Map<String, int>, Map<(String, String), int>) meshLinks() {
+    final weight = <String, int>{};
+    final links = <(String, String), int>{};
+    void walk(List<String> hops) {
+      for (var i = 0; i + 1 < hops.length; i++) {
+        final a = hops[i], b = hops[i + 1];
+        final k = a.compareTo(b) < 0 ? (a, b) : (b, a);
+        links[k] = (links[k] ?? 0) + 1;
+      }
+      for (final h in hops) {
+        weight[h] = (weight[h] ?? 0) + 1;
+      }
+    }
+
+    for (final m in messages) {
+      if (m.path != null && m.path!.isNotEmpty) walk([...m.path!, 'me']);
+    }
+    for (final c in contacts.values) {
+      if (c.hops > 0) {
+        walk(['me', for (final h in c.path.hops()) p.hex(h)]);
+      } else if (c.hops == 0 && c.type == p.advRepeater) {
+        walk(['me', p.hex(c.key.sublist(0, 1))]);
+      }
+    }
+    return (weight, links);
+  }
+
+  /// The likeliest node for a hop hash, located ones first, then repeaters.
+  p.Contact? hopContact(List<int> h, {bool located = false}) {
+    final cs = contacts.values.where((c) => p.startsWith(c.key, h) && (!located || c.lat != 0 || c.lon != 0)).toList()
+      ..sort((a, b) {
+        int score(p.Contact c) => ((c.lat == 0 && c.lon == 0) ? 2 : 0) + (c.type == p.advRepeater ? 0 : 1);
+        return score(a).compareTo(score(b));
+      });
+    return cs.firstOrNull;
+  }
 
   // --- outgoing ---------------------------------------------------------------
 
