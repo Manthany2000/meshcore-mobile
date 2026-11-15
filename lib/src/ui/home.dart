@@ -1,20 +1,23 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:material_ui/material_ui.dart';
-import 'package:pointycastle/digests/sha256.dart';
 
 import '../../main.dart';
 import '../model.dart';
 import '../protocol.dart' as p;
 import '../session.dart';
+import '../setup.dart';
 import 'chat.dart';
 import 'common.dart';
 import 'contact_sheet.dart';
 import 'dashboard.dart';
 import 'map.dart';
+import 'node_form.dart';
+import 'scope.dart';
+
+export '../setup.dart' show hashtagSecret;
 
 class HomeScreen extends StatefulWidget {
   final AppState app;
@@ -32,17 +35,91 @@ class _HomeScreenState extends State<HomeScreen> {
     super.initState();
     _newContacts = widget.app.model.newContacts.stream.listen((c) {
       if (!mounted) return;
+      final title = c.type == p.advRepeater ? 'New repeater found' : 'New contact found';
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: Text('New ${typeName(c.type).toLowerCase()} heard: ${c.name}'),
+        content: Text('$title: ${c.name.isEmpty ? c.prefixHex.substring(0, 6) : c.name}'),
         duration: const Duration(seconds: 3),
       ));
+    });
+    widget.app.foundAway.addListener(_showFoundAway);
+    widget.app.offerSetup.addListener(_offerSetup);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _showFoundAway();
+      _offerSetup();
     });
   }
 
   @override
   void dispose() {
     _newContacts?.cancel();
+    widget.app.foundAway.removeListener(_showFoundAway);
+    widget.app.offerSetup.removeListener(_offerSetup);
     super.dispose();
+  }
+
+  void _showFoundAway() {
+    final found = widget.app.foundAway.value;
+    if (found.isEmpty || !mounted) return;
+    widget.app.foundAway.value = [];
+    final n = found.length;
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (ctx) => SafeArea(
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxHeight: MediaQuery.of(ctx).size.height * 0.7),
+          child: ListView(shrinkWrap: true, children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text('Found while you were away', style: Theme.of(ctx).textTheme.titleMedium),
+                const SizedBox(height: 4),
+                Text('Your node added $n new node${n != 1 ? 's' : ''} while the app was closed.'),
+              ]),
+            ),
+            for (final c in found)
+              ListTile(
+                leading: CircleAvatar(child: Icon(typeIcon(c.type))),
+                title: Text(c.name.isEmpty ? c.prefixHex.substring(0, 6) : c.name),
+                subtitle: Text([typeName(c.type), hopsText(c.hops)].join(' · ')),
+                onTap: () {
+                  Navigator.pop(ctx);
+                  final now = widget.app.model.contacts[c.prefixHex] ?? c;
+                  showContact(context, widget.app, now);
+                },
+              ),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _offerSetup() async {
+    final app = widget.app;
+    if (!app.offerSetup.value || !mounted) return;
+    app.offerSetup.value = false;
+    final si = app.model.selfInfo;
+    if (si == null) return;
+    final answer = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Set up this node?'),
+        content: Text('${si.name} still has the name it was flashed with, so it looks new. A few questions — name, '
+            'radio, position, channels — and it\'s ready for the mesh.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, 'never'), child: const Text('Don\'t ask for this node')),
+          TextButton(onPressed: () => Navigator.pop(ctx, 'later'), child: const Text('Not now')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, 'yes'), child: const Text('Set up')),
+        ],
+      ),
+    );
+    if (answer == 'never') {
+      app.prefs.noSetup.add(p.hex(si.key.sublist(0, 4)));
+      await app.prefs.save();
+    } else if (answer == 'yes' && mounted) {
+      openSetup(context, app);
+    }
   }
 
   @override
@@ -200,14 +277,21 @@ class _ConvTile extends StatelessWidget {
   }
 }
 
+void openSetup(BuildContext context, AppState app) {
+  if (app.model.selfInfo == null || app.session?.state != LinkState.ready) return;
+  Navigator.of(context).push(MaterialPageRoute(builder: (_) => SetupWizard(app: app)));
+}
+
+void openNodeSettings(BuildContext context, AppState app) {
+  if (app.model.selfInfo == null) return;
+  Navigator.of(context).push(MaterialPageRoute(builder: (_) => NodeSettingsScreen(app: app)));
+}
+
 void openChatFromAnywhere(BuildContext context, AppState app, String conv) => openChat(context, app, conv);
 
 void openChat(BuildContext context, AppState app, String conv) {
   Navigator.of(context).push(MaterialPageRoute(builder: (_) => ChatScreen(app: app, conv: conv)));
 }
-
-Uint8List hashtagSecret(String name) =>
-    SHA256Digest().process(Uint8List.fromList(utf8.encode(name))).sublist(0, 16);
 
 Future<void> _addChannel(BuildContext context, AppState app) async {
   final s = app.session;
@@ -279,11 +363,33 @@ Future<void> _channelMenu(BuildContext context, AppState app, int idx) async {
   final m = app.model;
   final ch = m.channels[idx];
   if (ch == null) return;
+  final s = app.session;
+  final scopes = s?.scopes ?? false;
   final remove = await showModalBottomSheet<bool>(
     context: context,
     builder: (ctx) => SafeArea(
       child: Column(mainAxisSize: MainAxisSize.min, children: [
-        ListTile(title: Text(ch.name), subtitle: Text('Slot $idx')),
+        ListTile(
+          title: Text(ch.name),
+          subtitle: Text('Slot $idx${scopes ? ' · scope: ${scopeText(m.channelScope(idx), m.defaultScope)}' : ''}'),
+        ),
+        if (scopes)
+          ListTile(
+            leading: const Icon(Icons.travel_explore),
+            title: const Text('Flood scope…'),
+            onTap: () async {
+              Navigator.pop(ctx, false);
+              final got = await pickScope(
+                context,
+                title: 'Flood scope for ${ch.name}',
+                intro: 'Which repeaters may relay messages you send on ${ch.name}.',
+                current: m.channelScope(idx),
+                nodeDefault: m.defaultScope,
+                unscoped: s?.unscoped ?? false,
+              );
+              if (got != null) m.setChannelScope(idx, got);
+            },
+          ),
         ListTile(
           leading: const Icon(Icons.done_all),
           title: const Text('Mark read'),
@@ -411,6 +517,32 @@ class NodeTab extends StatelessWidget {
         ]),
       ),
       Card(
+        child: Column(children: [
+          ListTile(
+            leading: const Icon(Icons.tune),
+            title: const Text('Node settings'),
+            subtitle: const Text('Name, radio, position, privacy, Bluetooth PIN'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => openNodeSettings(context, app),
+          ),
+          ListTile(
+            leading: const Icon(Icons.auto_fix_high),
+            title: const Text('Set up node…'),
+            subtitle: const Text('A step-by-step setup, as for a new node'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => openSetup(context, app),
+          ),
+          if (app.session?.scopes ?? false)
+            ListTile(
+              leading: const Icon(Icons.travel_explore),
+              title: const Text('Default flood scope'),
+              subtitle: Text(m.defaultScope == null ? 'Not known yet' : (m.defaultScope!.isEmpty ? 'None' : '#${m.defaultScope}')),
+              trailing: const Icon(Icons.chevron_right),
+              onTap: () => _defaultScope(context),
+            ),
+        ]),
+      ),
+      Card(
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           const ListTile(leading: Icon(Icons.campaign_outlined), title: Text('Advertise')),
           Padding(
@@ -439,6 +571,40 @@ class NodeTab extends StatelessWidget {
             ),
         ]),
       ),
+      Card(
+        child: ListenableBuilder(
+          listenable: app.prefs,
+          builder: (context, _) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const ListTile(leading: Icon(Icons.palette_outlined), title: Text('Accent colour')),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
+              child: Wrap(spacing: 8, runSpacing: 8, children: [
+                for (final e in accents.entries)
+                  ChoiceChip(
+                    avatar: CircleAvatar(backgroundColor: e.value, radius: 8),
+                    label: Text(e.key),
+                    selected: app.prefs.accent == e.key,
+                    onSelected: (_) {
+                      app.prefs.accent = e.key;
+                      app.prefs.save();
+                    },
+                  ),
+              ]),
+            ),
+            SwitchListTile(
+              secondary: const Icon(Icons.notifications_outlined),
+              title: const Text('Notifications'),
+              subtitle: const Text('Direct messages, @mentions and new nodes while the app is in the background'),
+              value: app.prefs.notifications,
+              onChanged: (v) {
+                app.prefs.notifications = v;
+                app.prefs.save();
+                if (v) app.notifier.askPermission();
+              },
+            ),
+          ]),
+        ),
+      ),
       const SizedBox(height: 8),
       OutlinedButton.icon(
         onPressed: app.disconnect,
@@ -454,6 +620,24 @@ class NodeTab extends StatelessWidget {
         title: Text(k),
         trailing: Text(v),
       );
+
+  Future<void> _defaultScope(BuildContext context) async {
+    final s = app.session;
+    if (s == null || app.model.defaultScope == null) return;
+    final got = await pickScope(
+      context,
+      title: 'Default flood scope',
+      intro: 'The region the node keeps its floods to: channel messages without their own scope, DMs that flood, '
+          'and adverts. Saved on the node.',
+      current: app.model.defaultScope!,
+      forChannel: false,
+    );
+    if (got == null || got == app.model.defaultScope) return;
+    final f = await s.setDefaultScope(got);
+    if (context.mounted) {
+      toast(context, f?.kind == 'ok' ? (got.isEmpty ? 'Default scope cleared' : 'Floods kept to #$got') : 'The node refused it');
+    }
+  }
 
   Future<void> _advert(BuildContext context, bool flood) async {
     final f = await app.session?.advert(flood);

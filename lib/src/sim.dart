@@ -37,7 +37,10 @@ const _chatter = [
 ];
 
 class SimTransport extends Transport {
-  final sim = Sim();
+  final Sim sim;
+  /// fresh: a node that's just been flashed. visitor: a node the app hasn't
+  /// seen is in its contact list, as if heard while the app was closed.
+  SimTransport({bool fresh = false, bool visitor = false}) : sim = Sim(fresh: fresh, visitor: visitor);
 
   @override
   String get label => 'Simulator';
@@ -45,6 +48,7 @@ class SimTransport extends Transport {
   @override
   Future<void> connect() async {
     sim.onFrame = (b) => onFrame(b);
+    sim.onReboot = () => onDisconnect();
     await Future.delayed(const Duration(milliseconds: 300));
     sim.start();
   }
@@ -59,6 +63,84 @@ class SimTransport extends Transport {
   Future<void> close() async => sim.stop();
 }
 
+/// A repeater's region map, answering `region ...` as CommonCLI does.
+class SimRegions {
+  // name -> (parent, floods allowed); '*' is the root.
+  final r = <String, (String?, bool)>{'*': (null, true), 'usa': ('*', true), 'ma': ('usa', true), 'boston': ('ma', true)};
+  String? home = 'ma', def;
+
+  String? _find(String prefix) {
+    prefix = prefix.replaceFirst(RegExp(r'^#+'), '');
+    if (r.containsKey(prefix)) return prefix;
+    for (final n in r.keys) {
+      if (n.startsWith(prefix)) return n;
+    }
+    return null;
+  }
+
+  String tree() {
+    final lines = <String>[];
+    void walk(String name, int depth) {
+      lines.add('${' ' * depth}$name${name == home ? '^' : ''}${r[name]!.$2 ? ' F' : ''}');
+      for (final e in r.entries) {
+        if (e.value.$1 == name) walk(e.key, depth + 1);
+      }
+    }
+
+    walk('*', 0);
+    final t = lines.join('\n');
+    return t.length > 159 ? t.substring(0, 159) : t;
+  }
+
+  String command(String cmd) {
+    final p0 = cmd.split(' ').where((x) => x.isNotEmpty).toList();
+    if (p0.length == 1) return tree();
+    final op = p0[1], arg = p0.length > 2 ? p0[2] : null;
+    switch (op) {
+      case 'save':
+        return 'OK';
+      case 'allowf' || 'denyf' when arg != null:
+        final n = _find(arg);
+        if (n == null) return 'Err - unknown region';
+        r[n] = (r[n]!.$1, op == 'allowf');
+        return 'OK';
+      case 'home':
+        if (arg == null) return ' home is ${home ?? '*'}';
+        final n = _find(arg);
+        if (n == null) return 'Err - unknown region';
+        home = n;
+        return ' home is now $n';
+      case 'default':
+        if (arg == null) return ' default scope is ${def ?? '<null>'}';
+        if (arg == '<null>') {
+          def = null;
+          return ' default scope is now <null>';
+        }
+        final n = _find(arg) ?? p.regionName(arg);
+        r[n] = (r[n]?.$1 ?? '*', true);
+        def = n;
+        return ' default scope is now $n';
+      case 'put' when arg != null:
+        final parent = p0.length > 3 ? _find(p0[3]) : '*';
+        if (parent == null) return 'Err - unknown parent';
+        if (p.regionProblem(arg) != null) return 'Err - unable to put';
+        r[p.regionName(arg)] = (parent, true);
+        return 'OK - (flood allowed)';
+      case 'remove' when arg != null:
+        final n = p.regionName(arg);
+        if (!r.containsKey(n) || n == '*') return 'Err - not found';
+        if (r.values.any((v) => v.$1 == n)) return 'Err - not empty';
+        r.remove(n);
+        if (home == n) home = null;
+        return 'OK';
+      case 'get' when arg != null:
+        final n = _find(arg);
+        return n == null ? 'Err - unknown region' : ' $n ${r[n]!.$2 ? 'F' : ''}';
+    }
+    return 'Err - ??';
+  }
+}
+
 extension _Bytes on BytesBuilder {
   void u32(int v) => add(Uint8List(4)..buffer.asByteData().setUint32(0, v & 0xFFFFFFFF, Endian.little));
   void i32(int v) => add(Uint8List(4)..buffer.asByteData().setInt32(0, v, Endian.little));
@@ -71,8 +153,20 @@ extension _Bytes on BytesBuilder {
 class Sim {
   final rnd = Random();
   void Function(Uint8List) onFrame = (_) {};
-  final name = 'SimNode';
-  final key = _key('sim-self');
+  String name = 'SimNode';
+  Uint8List key = _key('sim-self');
+  // What the setup commands change, as the firmware keeps them.
+  (int, int, int, int) radio = (910525, 62500, 7, 5); // kHz, Hz, sf, cr
+  int txPower = 22, maxTx = 22;
+  int lat = 42356000, lon = -71100000;
+  int multiAcks = 0, locPolicy = 0, telemetry = 0, manualAdd = 0;
+  int pin = 0, pathHashMode = 0;
+  Uint8List? sendScope = Uint8List(0); // the scope override: empty none, a key, or null for unscoped
+  (String, Uint8List) defaultScope = ('', Uint8List(0)); // saved on the node
+  final sentScopes = <Uint8List?>[]; // the scope each channel message went out with, for the tests
+  int reboots = 0;
+  void Function() onReboot = () {};
+  final regions = <String, SimRegions>{};
   int clock = nowS().floor() - 3600; // a bit behind, so the app sets it
   double _t0 = nowS();
   final queue = <Uint8List>[];
@@ -91,7 +185,7 @@ class Sim {
     SimNode('Harbor Repeater', p.advRepeater, 42.32, -70.98, 1),
     SimNode('carol-mobile', p.advChat, 42.31, -71.08, 1),
   ];
-  late final Map<int, (String, Uint8List)> channels = {
+  late Map<int, (String, Uint8List)> channels = {
     0: ('Public', _publicSecret),
     1: ('#test', _key('#test').sublist(0, 16)),
   };
@@ -102,11 +196,23 @@ class Sim {
 
   List<SimNode> get repeaters => contacts.where((c) => c.type == p.advRepeater).toList();
 
-  Sim() {
+  Sim({bool fresh = false, bool visitor = false}) {
     final now = nowS().floor();
+    if (visitor) contacts.add(SimNode('Visitor-${1000 + rnd.nextInt(9000)}', p.advChat, 42.37, -71.22, 1));
     // Queued while no app was connected: the old frame format.
     queue.add(_chanMsg(0, 'alice', 'morning all', now - 1800, v3: false));
     queue.add(_dm(contacts[5].key, 'you around later?', now - 900, v3: false));
+    if (fresh) {
+      // Just flashed: default name, radio and position, nothing heard yet.
+      key = _key('sim-fresh');
+      name = p.hex(key.sublist(0, 4)).toUpperCase();
+      radio = (869618, 62500, 8, 8);
+      lat = lon = 0;
+      contacts.clear();
+      discovered.clear();
+      queue.clear();
+      channels = {0: ('Public', _publicSecret)};
+    }
   }
 
   int clockNow() => clock + (nowS() - _t0).floor();
@@ -205,6 +311,7 @@ class Sim {
       _push(_contactFrame(node, p.pushNewAdvert));
     }
     final chats = contacts.where((c) => c.type == p.advChat).toList();
+    if (chats.isEmpty) return; // a fresh node has heard nobody yet
     final sender = chats[rnd.nextInt(chats.length)];
     if (rnd.nextDouble() < 0.75) {
       final ch = channels.keys.elementAt(rnd.nextInt(channels.length));
@@ -326,13 +433,33 @@ class Sim {
           'advert.interval': '120',
           'flood.advert.interval': '12',
           'flood.max': '64',
+          'flood.max.unscoped': '64',
+          'flood.max.advert': '64',
+          'radio': '910.525,62.5,7,5',
+          'path.hash.mode': '0',
+          'radio.rxgain': 'on',
+          'cad': 'off',
+          'loop.detect': 'off',
+          'multi.acks': '0',
+          'af': '1.0',
+          'rxdelay': '0.0',
+          'txdelay': '0.5',
+          'direct.txdelay': '0.3',
+          'agc.reset.interval': '0',
+          'int.thresh': '0',
+          'guest.password': '',
+          'allow.read.only': 'off',
           'lat': '${r.lat}',
           'lon': '${r.lon}',
           'owner.info': '',
         });
     final parts = cmd.split(' ');
     String reply;
-    if (parts.length == 2 && parts[0] == 'get' && cfg.containsKey(parts[1])) {
+    if (parts[0] == 'password' && parts.length == 2) {
+      reply = 'password now: ${parts[1]}';
+    } else if (parts[0] == 'region') {
+      reply = regions.putIfAbsent(px, SimRegions.new).command(cmd);
+    } else if (parts.length == 2 && parts[0] == 'get' && cfg.containsKey(parts[1])) {
       reply = '> ${cfg[parts[1]]}';
     } else if (parts.length >= 3 && parts[0] == 'set' && cfg.containsKey(parts[1])) {
       cfg[parts[1]] = parts.sublist(2).join(' ');
@@ -346,6 +473,7 @@ class Sim {
             'advert': 'OK - Advert sent',
             'advert.zerohop': 'OK - zerohop advert sent',
             'clock sync': 'OK - clock set',
+            'reboot': 'OK - rebooting',
           }[cmd] ??
           'Unknown command';
     }
@@ -364,24 +492,100 @@ class Sim {
     switch (b[0]) {
       case p.cmdAppStart:
         _push((BytesBuilder()
-              ..add([p.respSelfInfo, 1, 22, 22])
+              ..add([p.respSelfInfo, 1, txPower & 255, maxTx])
               ..add(key)
-              ..i32(42356000)
-              ..i32(-71100000)
-              ..add(Uint8List(4))
-              ..u32(910525)
-              ..u32(62500)
-              ..add([7, 5])
+              ..i32(lat)
+              ..i32(lon)
+              ..add([multiAcks, locPolicy, telemetry, manualAdd])
+              ..u32(radio.$1)
+              ..u32(radio.$2)
+              ..add([radio.$3, radio.$4])
               ..add(utf8.encode(name)))
             .toBytes());
       case p.cmdDeviceQuery:
         _push((BytesBuilder()
               ..add([p.respDeviceInfo, 14, 175, 8])
-              ..add(Uint8List(4))
+              ..u32(pin)
               ..fixed('05 Nov 2026', 12)
               ..fixed('Simulated', 40)
-              ..fixed('sim-1.0', 20))
+              ..fixed('sim-1.0', 20)
+              ..add([0, pathHashMode]))
             .toBytes());
+      case p.cmdSetAdvertName when b.length >= 2:
+        name = utf8.decode(b.sublist(1, min(b.length, 32)), allowMalformed: true);
+        _push(_b([p.respOk]));
+      case p.cmdSetRadioParams when b.length >= 11:
+        final f = bd.getUint32(1, Endian.little), bw = bd.getUint32(5, Endian.little), sf = b[9], cr = b[10];
+        if (f >= 150000 && f <= 2500000 && sf >= 5 && sf <= 12 && cr >= 5 && cr <= 8 && bw >= 7000 && bw <= 500000) {
+          radio = (f, bw, sf, cr);
+          _push(_b([p.respOk]));
+        } else {
+          _push(_b([p.respErr, 6]));
+        }
+      case p.cmdSetRadioTxPower when b.length >= 2:
+        final dbm = bd.getInt8(1);
+        if (dbm >= -9 && dbm <= maxTx) {
+          txPower = dbm;
+          _push(_b([p.respOk]));
+        } else {
+          _push(_b([p.respErr, 6]));
+        }
+      case p.cmdSetAdvertLatLon when b.length >= 9:
+        lat = bd.getInt32(1, Endian.little);
+        lon = bd.getInt32(5, Endian.little);
+        _push(_b([p.respOk]));
+      case p.cmdSetOtherParams when b.length >= 2:
+        manualAdd = b[1];
+        if (b.length >= 5) {
+          telemetry = b[2];
+          locPolicy = b[3];
+          multiAcks = b[4];
+        }
+        _push(_b([p.respOk]));
+      case p.cmdSetDevicePin when b.length >= 5:
+        final v = bd.getUint32(1, Endian.little);
+        if (v == 0 || (v >= 100000 && v <= 999999)) {
+          pin = v;
+          _push(_b([p.respOk]));
+        } else {
+          _push(_b([p.respErr, 6]));
+        }
+      case p.cmdSetFloodScope when b.length >= 2:
+        sendScope = b[1] == 1 ? null : (b.length >= 18 ? b.sublist(2, 18) : Uint8List(0));
+        _push(_b([p.respOk]));
+      case p.cmdSetDefaultFloodScope:
+        if (b.length >= 1 + 31 + 16) {
+          final n = p.cstr(b.sublist(1, 32));
+          if (n.isEmpty || n.length >= 31) return _push(_b([p.respErr, 6]));
+          defaultScope = (n, b.sublist(32, 48));
+        } else {
+          defaultScope = ('', Uint8List(0));
+        }
+        _push(_b([p.respOk]));
+      case p.cmdGetDefaultFloodScope:
+        final (n, k) = defaultScope;
+        final o = BytesBuilder()..addByte(p.respDefaultFloodScope);
+        if (n.isNotEmpty) {
+          o
+            ..fixed(n, 31)
+            ..add(k);
+        }
+        _push(o.toBytes());
+      case p.cmdSetPathHashMode when b.length >= 3 && b[1] == 0:
+        if (b[2] < 3) {
+          pathHashMode = b[2];
+          _push(_b([p.respOk]));
+        } else {
+          _push(_b([p.respErr, 6]));
+        }
+      case p.cmdReboot:
+        reboots++;
+        _timers.add(Timer(const Duration(milliseconds: 200), onReboot));
+      case p.cmdAddUpdateContact when b.length >= 1 + 32 + 3 + 64 + 32 + 4:
+        if (_contact(b.sublist(1, 33)) == null) {
+          contacts.add(SimNode(p.cstr(b.sublist(100, 132)), b[33], 0, 0, -1));
+        }
+        _push(_b([p.respOk]));
       case p.cmdGetDeviceTime:
         _push((BytesBuilder()
               ..addByte(p.respCurrTime)
@@ -424,6 +628,7 @@ class Sim {
         final ch = b[2], ts = bd.getUint32(3, Endian.little);
         final text = utf8.decode(b.sublist(7));
         if (!channels.containsKey(ch)) return _push(_b([p.respErr, 2]));
+        sentScopes.add(sendScope != null && sendScope!.isEmpty ? defaultScope.$2 : sendScope);
         _push(_b([p.respOk]));
         _copies(p.payloadGrpTxt, p.encryptGroup(channels[ch]!.$2, ts, name, text));
       case p.cmdSendLogin:

@@ -13,6 +13,7 @@ const txUuid = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // it notifies
 const passwordMax = 15;
 const textMax = 160; // MAX_TEXT_LEN; for channels it includes "name: "
 const keyPrefix = 6;
+const nameMax = 31; // node_name[32] in the firmware's prefs
 
 // Commands, app to node.
 const cmdAppStart = 1;
@@ -22,8 +23,14 @@ const cmdGetContacts = 4;
 const cmdGetDeviceTime = 5;
 const cmdSetDeviceTime = 6;
 const cmdSendSelfAdvert = 7;
+const cmdSetAdvertName = 8;
+const cmdAddUpdateContact = 9;
 const cmdSyncNextMessage = 10;
+const cmdSetRadioParams = 11;
+const cmdSetRadioTxPower = 12;
 const cmdResetPath = 13;
+const cmdSetAdvertLatLon = 14;
+const cmdReboot = 19;
 const cmdGetBattAndStorage = 20;
 const cmdDeviceQuery = 22;
 const cmdSendLogin = 26;
@@ -31,6 +38,12 @@ const cmdSendStatusReq = 27;
 const cmdGetContactByKey = 30;
 const cmdGetChannel = 31;
 const cmdSetChannel = 32;
+const cmdSetDevicePin = 37;
+const cmdSetOtherParams = 38;
+const cmdSetFloodScope = 54; // v8+; the 'unscoped' form v12+
+const cmdSetPathHashMode = 61;
+const cmdSetDefaultFloodScope = 63;
+const cmdGetDefaultFloodScope = 64;
 
 // Replies and pushes, node to app.
 const respOk = 0;
@@ -49,6 +62,7 @@ const respDeviceInfo = 13;
 const respContactMsgV3 = 16;
 const respChannelMsgV3 = 17;
 const respChannelInfo = 18;
+const respDefaultFloodScope = 28;
 const pushAdvert = 0x80;
 const pushPathUpdated = 0x81;
 const pushSendConfirmed = 0x82;
@@ -94,6 +108,7 @@ bool startsWith(List<int> a, List<int> prefix) =>
 int _u32(Uint8List b, int at) => ByteData.sublistView(b).getUint32(at, Endian.little);
 int _i32(Uint8List b, int at) => ByteData.sublistView(b).getInt32(at, Endian.little);
 int _i8(Uint8List b, int at) => ByteData.sublistView(b).getInt8(at);
+int _u32Safe(Uint8List b, int at) => b.length >= at + 4 ? _u32(b, at) : 0;
 
 String cstr(List<int> b) {
   final z = b.indexOf(0);
@@ -313,10 +328,14 @@ Frame? decode(Uint8List b) {
       if (n < 58) return null;
       return f('self_info', {
         'key': _sub(b, 4, 36),
-        'tx_power': b[2],
+        'tx_power': _i8(b, 2),
         'max_tx': b[3],
         'lat': _i32(b, 36) / 1e6,
         'lon': _i32(b, 40) / 1e6,
+        'multi_acks': b[44],
+        'loc_policy': b[45],
+        'telemetry': b[46],
+        'manual_add': b[47],
         'freq': _u32(b, 48) / 1000,
         'bw': _u32(b, 52) / 1000,
         'sf': b[56],
@@ -331,8 +350,12 @@ Frame? decode(Uint8List b) {
       return n >= 3 ? f('battery', {'mv': b[1] | b[2] << 8}) : null;
     case respDeviceInfo:
       if (n < 2) return null;
+      // code, ver, max_contacts/2, max_channels, ble_pin, date[12], maker[40], version[20],
+      // client repeat (v9+), path hash mode (v10+)
       return f('device_info', {
         'protocol': b[1],
+        'ble_pin': _u32Safe(b, 4),
+        'path_hash_mode': n >= 82 ? b[81] : 0,
         'max_contacts': n > 2 ? b[2] * 2 : 0,
         'max_channels': n > 3 ? b[3] : 8,
         'build': n >= 20 ? cstr(_sub(b, 8, 20)) : '',
@@ -360,6 +383,11 @@ Frame? decode(Uint8List b) {
         'name': cstr(_sub(b, 2, 34)),
         'secret': secret.any((x) => x != 0) ? secret : Uint8List(0),
       });
+    case respDefaultFloodScope:
+      // code, name[31], key[16]; just the code when the node has none.
+      return n >= 1 + 31 + 16
+          ? f('default_scope', {'name': cstr(_sub(b, 1, 32)), 'key': _sub(b, 32, 48)})
+          : f('default_scope', {'name': '', 'key': Uint8List(0)});
     case respSent:
       return n >= 10 ? f('sent', {'flood': b[1] != 0, 'ack': _u32(b, 2), 'timeout_ms': _u32(b, 6)}) : null;
     case pushSendConfirmed:
@@ -471,6 +499,144 @@ Uint8List getContact(List<int> key) => _cat([
     ]);
 
 Uint8List simple(int cmd) => Uint8List.fromList([cmd]);
+
+Uint8List _le32s(int v) => Uint8List(4)..buffer.asByteData().setInt32(0, v, Endian.little);
+
+/// Saves a contact on the node. No route (0xFF): the first message floods and learns one.
+Uint8List addContact(Contact c) => _cat([
+      [cmdAddUpdateContact],
+      c.key.sublist(0, 32),
+      [c.type, c.flags, 0xFF],
+      Uint8List(64),
+      _fixed(c.name, 32),
+      _le32(c.lastAdvert),
+      _le32s((c.lat * 1e6).round()),
+      _le32s((c.lon * 1e6).round()),
+    ]);
+
+Uint8List setName(String name) {
+  final e = utf8.encode(name);
+  return _cat([
+    [cmdSetAdvertName],
+    e.length > nameMax ? e.sublist(0, nameMax) : e
+  ]);
+}
+
+/// Frequency in kHz and bandwidth in Hz on the wire. No client-repeat byte, so that stays off.
+Uint8List setRadio(double freqMhz, double bwKhz, int sf, int cr) => _cat([
+      [cmdSetRadioParams],
+      _le32((freqMhz * 1000).round()),
+      _le32((bwKhz * 1000).round()),
+      [sf, cr]
+    ]);
+
+Uint8List setTxPower(int dbm) => Uint8List.fromList([cmdSetRadioTxPower, dbm & 0xFF]);
+
+Uint8List setLatLon(double lat, double lon) => _cat([
+      [cmdSetAdvertLatLon],
+      _le32s((lat * 1e6).round()),
+      _le32s((lon * 1e6).round())
+    ]);
+
+/// 0 or six digits. 0 is the firmware default: a random PIN on boards with a
+/// screen, 123456 on the rest. Used from the next boot.
+Uint8List setPin(int pin) => _cat([
+      [cmdSetDevicePin],
+      _le32(pin)
+    ]);
+
+Uint8List setOtherParams(int manualAdd, int telemetry, int locPolicy, int multiAcks) =>
+    Uint8List.fromList([cmdSetOtherParams, manualAdd, telemetry, locPolicy, multiAcks]);
+
+/// Hash bytes per hop in the floods we send, minus one (0-2).
+Uint8List setPathHashMode(int mode) => Uint8List.fromList([cmdSetPathHashMode, 0, mode]);
+
+Uint8List reboot() => _cat([
+      [cmdReboot],
+      utf8.encode('reboot')
+    ]);
+
+// --- flood scopes (regions) -----------------------------------------------------
+//
+// A scoped flood carries a code made from the region's key, and repeaters only
+// relay it if they allow that region. A region's key is sha256("#name")[:16],
+// whether or not the name was written with its '#'.
+
+const scopeNameMax = 30; // char name[31] in the firmware
+
+/// How the repeaters show it: without the '#'.
+String regionName(String name) => name.trim().replaceFirst(RegExp(r'^#+'), '');
+
+/// Why the firmware wouldn't take this region name, or null.
+String? regionProblem(String name) {
+  final n = regionName(name);
+  if (n.isEmpty) return 'Enter a region name.';
+  if (utf8.encode(n).length > scopeNameMax - 1) return 'Region names can be at most ${scopeNameMax - 1} bytes.';
+  // RegionMap::is_name_char: letters, digits, accented letters, '-' and '$'.
+  final bad = {
+    for (final r in n.runes)
+      if (!(r == 0x2D || r == 0x24 || (r >= 0x30 && r <= 0x39) || r >= 0x41)) String.fromCharCode(r)
+  }.toList()
+    ..sort();
+  if (bad.isNotEmpty) return "Region names can't have ${bad.map((c) => "'$c'").join(' ')}.";
+  return null;
+}
+
+Uint8List regionKey(String name) =>
+    SHA256Digest().process(Uint8List.fromList(utf8.encode('#${regionName(name)}'))).sublist(0, 16);
+
+/// The scope the node puts on floods it sends from now on, until it restarts.
+/// A name scopes to that region; "" goes back to the node's default scope; null
+/// sends them with no scope at all (protocol v12+).
+Uint8List setFloodScope(String? name) {
+  if (name == null) return Uint8List.fromList([cmdSetFloodScope, 1]);
+  if (regionName(name).isEmpty) return Uint8List.fromList([cmdSetFloodScope, 0]);
+  return _cat([
+    [cmdSetFloodScope, 0],
+    regionKey(name)
+  ]);
+}
+
+/// Saved on the node; "" clears it.
+Uint8List setDefaultScope(String name) {
+  final n = regionName(name);
+  if (n.isEmpty) return Uint8List.fromList([cmdSetDefaultFloodScope]);
+  return _cat([
+    [cmdSetDefaultFloodScope],
+    _fixed(n, 31),
+    regionKey(n)
+  ]);
+}
+
+/// One line of a repeater's `region` reply.
+class Region {
+  final String name;
+  final int depth;
+  final bool flood; // relays floods scoped to it ('*': floods with no scope)
+  final bool home;
+  final String? parent;
+  const Region(this.name, this.depth, this.flood, this.home, this.parent);
+}
+
+/// The tree a repeater prints for `region`: one region a line, indented a
+/// space per level under its parent, '^' after the home region and ' F' when
+/// floods are allowed. '*' is the root.
+List<Region> parseRegions(String text) {
+  final out = <Region>[];
+  var stack = <String>[];
+  final re = RegExp(r'^(\S+?)(\^?)( F)?$');
+  for (final line in text.split('\n')) {
+    if (line.trim().isEmpty) continue;
+    final depth = line.length - line.trimLeft().length;
+    final m = re.firstMatch(line.trim());
+    if (m == null) continue;
+    final name = m.group(1)!;
+    if (stack.length > depth) stack = stack.sublist(0, depth);
+    out.add(Region(name, depth, m.group(3) != null, m.group(2)!.isNotEmpty, stack.isEmpty ? null : stack.last));
+    stack.add(name);
+  }
+  return out.isNotEmpty && out.first.name == '*' ? out : []; // anything else isn't a region tree
+}
 
 // --- channel packets ------------------------------------------------------------
 

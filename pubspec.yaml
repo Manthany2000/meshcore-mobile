@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 0.2.0+2
+version: 0.3.0+3
 
 environment:
   sdk: ^3.14.0
@@ -40,6 +40,7 @@ dependencies:
   path_provider: ^2.1.6
   flutter_map: ^8.3.2
   latlong2: ^0.10.1
+  flutter_local_notifications: ^23.0.2
 
 dev_dependencies:
   flutter_test:
@@ -53,6 +54,7 @@ dev_dependencies:
   # package. See that file for information about deactivating specific lint
   # rules and activating additional ones.
   flutter_lints: ^6.0.0
+  flutter_native_splash: ^2.4.8
 
 # For information on the generic Dart part of this file, see the
 # following page: https://dart.dev/tools/pub/pubspec
@@ -95,3 +97,16 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+
+# The launch screen before Flutter starts: the mark on teal, the same as the
+# in-app splash (lib/src/ui/logo.dart). Regenerate with
+#   dart run flutter_native_splash:create
+flutter_native_splash:
+  color: "#0F766E"
+  image: assets/splash/logo.png
+  android_12:
+    color: "#0F766E"
+    image: assets/splash/logo_android12.png
+  ios: true
+  android: true
+  web: false

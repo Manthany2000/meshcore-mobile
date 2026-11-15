@@ -9,6 +9,7 @@ import '../session.dart';
 import 'common.dart';
 import 'contact_sheet.dart';
 import 'map.dart';
+import 'scope.dart';
 
 class ChatScreen extends StatefulWidget {
   final AppState app;
@@ -90,7 +91,14 @@ class _ChatScreenState extends State<ChatScreen> {
                 Text(m.convTitle(widget.conv)),
                 if (contact != null)
                   Text(
-                    m.alwaysFloods(contact.prefixHex) ? 'Always flood' : hopsText(contact.hops),
+                    m.alwaysFloods(contact.prefixHex) ? 'Always flood' : _route(contact),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.labelSmall,
+                  ),
+                if (isChannel && (app.session?.scopes ?? false))
+                  Text(
+                    'Scope: ${scopeText(m.channelScope(int.parse(widget.conv.substring(3))), m.defaultScope)}',
                     style: Theme.of(context).textTheme.labelSmall,
                   ),
               ]),
@@ -165,6 +173,19 @@ class _ChatScreenState extends State<ChatScreen> {
         );
       },
     );
+  }
+
+  /// The stored route to a DM contact, by repeater name where we know it.
+  String _route(p.Contact c) {
+    if (c.hops <= 0) return c.hops < 0 ? 'No route yet: the next message floods' : 'Direct';
+    final names = [
+      for (final h in c.path.hops())
+        (() {
+          final n = m.hopNames(p.hex(h));
+          return n.isEmpty ? p.hex(h) : n.first;
+        })()
+    ];
+    return '${hopsText(c.hops)} via ${names.join(' → ')}';
   }
 
   Future<void> _menu(BuildContext context, Message msg) async {

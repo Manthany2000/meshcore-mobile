@@ -91,6 +91,7 @@ class _MapTabState extends State<MapTab> with SingleTickerProviderStateMixin {
   final map = MapController();
   bool network = false;
   bool labels = true;
+  bool cluster = true;
   final types = {p.advChat, p.advRepeater, p.advRoom, p.advSensor};
   int? maxAge; // seconds
   String query = '';
@@ -249,8 +250,14 @@ class _MapTabState extends State<MapTab> with SingleTickerProviderStateMixin {
                 if (routeOf != null && m.contacts[routeOf] != null) _routeLayer(m.contacts[routeOf]!),
                 PolylineLayer(polylines: _pulseLines(cs)),
                 if (trace != null) ..._traceLayers(cs),
+                _Clusters(
+                  contacts: shown,
+                  enabled: cluster && trace == null && query.isEmpty,
+                  keep: {?selected, ?routeOf},
+                  marker: (c) => _marker(c, cs),
+                  onTap: (pts) => _fit(pts),
+                ),
                 MarkerLayer(markers: [
-                  for (final c in shown) _marker(c, cs),
                   if (me != null && (query.isEmpty || (m.selfInfo?.name.toLowerCase().contains(query.toLowerCase()) ?? false)))
                     Marker(
                       point: me,
@@ -486,6 +493,13 @@ class _MapTabState extends State<MapTab> with SingleTickerProviderStateMixin {
                   value: labels,
                   onChanged: (v) => both(() => labels = v),
                 ),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Group nearby nodes'),
+                  subtitle: const Text('Close together at this zoom: one circle with a count. Tap it to zoom in'),
+                  value: cluster,
+                  onChanged: (v) => both(() => cluster = v),
+                ),
                 const SizedBox(height: 4),
                 Text('Faded: not heard for 3 days. Glowing: heard in the last hour. Blue lines: packets your node hears, as they arrive.',
                     style: Theme.of(ctx).textTheme.bodySmall),
@@ -600,5 +614,75 @@ class _TraceCard extends StatelessWidget {
         ]),
       ),
     );
+  }
+}
+
+/// Contacts close together on screen drawn as one circle with a count, so a
+/// busy town stays readable when zoomed out. Tapping one zooms to its members.
+/// Regrouped as the map moves; from street level up everyone is drawn.
+class _Clusters extends StatelessWidget {
+  final List<p.Contact> contacts;
+  final bool enabled;
+  final Set<String> keep; // drawn on their own, whatever is near them
+  final Marker Function(p.Contact) marker;
+  final void Function(List<LatLng>) onTap;
+  const _Clusters({required this.contacts, required this.enabled, required this.keep, required this.marker, required this.onTap});
+
+  static const cell = 56.0; // px: pins nearer than about this merge
+
+  @override
+  Widget build(BuildContext context) {
+    final cam = MapCamera.of(context);
+    if (!enabled || cam.zoom >= 15 || contacts.length < 2) {
+      return MarkerLayer(markers: [for (final c in contacts) marker(c)]);
+    }
+    final groups = <(int, int), List<p.Contact>>{};
+    final alone = <p.Contact>[];
+    for (final c in contacts) {
+      if (keep.contains(c.prefixHex)) {
+        alone.add(c);
+        continue;
+      }
+      final px = cam.projectAtZoom(LatLng(c.lat, c.lon));
+      groups.putIfAbsent(((px.dx / cell).floor(), (px.dy / cell).floor()), () => []).add(c);
+    }
+    final cs = Theme.of(context).colorScheme;
+    final markers = <Marker>[for (final c in alone) marker(c)];
+    for (final g in groups.values) {
+      if (g.length == 1) {
+        markers.add(marker(g.first));
+        continue;
+      }
+      final pts = [for (final c in g) LatLng(c.lat, c.lon)];
+      final centre = LatLng(pts.map((e) => e.latitude).reduce((a, b) => a + b) / pts.length,
+          pts.map((e) => e.longitude).reduce((a, b) => a + b) / pts.length);
+      final repeaters = g.where((c) => c.type == p.advRepeater).length;
+      final size = 34.0 + math.min(g.length, 30) * 0.6;
+      markers.add(Marker(
+        point: centre,
+        width: size,
+        height: size,
+        child: GestureDetector(
+          onTap: () => onTap(pts),
+          child: Tooltip(
+            message: '${g.length} nodes${repeaters > 0 ? ', $repeaters repeater${repeaters > 1 ? 's' : ''}' : ''}',
+            child: Container(
+              decoration: BoxDecoration(
+                color: cs.primary,
+                shape: BoxShape.circle,
+                border: Border.all(color: Colors.white.withValues(alpha: 0.9), width: 2),
+                boxShadow: [
+                  BoxShadow(color: cs.primary.withValues(alpha: 0.35), blurRadius: 0, spreadRadius: 5),
+                  const BoxShadow(color: Colors.black26, blurRadius: 3, offset: Offset(0, 1)),
+                ],
+              ),
+              alignment: Alignment.center,
+              child: Text('${g.length}', style: TextStyle(color: cs.onPrimary, fontWeight: FontWeight.bold, fontSize: 13)),
+            ),
+          ),
+        ),
+      ));
+    }
+    return MarkerLayer(markers: markers);
   }
 }

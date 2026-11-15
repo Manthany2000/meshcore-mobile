@@ -14,6 +14,7 @@ import 'protocol.dart' as p;
 const clockSane = 1700000000; // late 2023: a node never told the time reads less
 const copyClaimS = 30; // how old a logged packet can be and still belong to a new message
 const repeatWindowS = 120; // how long a flood can still be going round
+const noScope = '*'; // a channel's scope: floods with no region at all
 
 enum MsgStatus { incoming, sending, sent, waiting, delivered, noAck, failed }
 
@@ -107,6 +108,7 @@ class SelfInfo {
   final String name;
   final double lat, lon, freq, bw;
   final int sf, cr, txPower, maxTx;
+  final int multiAcks, locPolicy, telemetry, manualAdd;
   SelfInfo(p.Frame f)
       : key = f['key'],
         name = f['name'],
@@ -117,7 +119,11 @@ class SelfInfo {
         sf = f['sf'],
         cr = f['cr'],
         txPower = f['tx_power'],
-        maxTx = f['max_tx'];
+        maxTx = f['max_tx'],
+        multiAcks = f['multi_acks'] ?? 0,
+        locPolicy = f['loc_policy'] ?? 0,
+        telemetry = f['telemetry'] ?? 0,
+        manualAdd = f['manual_add'] ?? 0;
 }
 
 class _LoggedPacket {
@@ -145,6 +151,12 @@ class Model extends ChangeNotifier {
   /// prefix hex -> [(at, batt_mv, noise_floor, last_rssi)], oldest first
   final repeaterHistory = <String, List<List<num>>>{};
   final newContacts = StreamController<p.Contact>.broadcast();
+  /// Channel slot -> (channel name, scope): "" the node's default, [noScope], or a region.
+  /// Kept here because the node has no per-channel scope; it applies while the name matches.
+  final channelScopes = <int, (String, String)>{};
+  String? defaultScope; // the node's, "" for none; null: not known
+  bool firstSync = true; // everything looks new the first time: that isn't news
+  List<p.Contact> foundAway = []; // in the node's contact list but new to us
   int _nextId = 1;
   File? _file;
   final Future<Directory> Function() dataDir;
@@ -155,6 +167,8 @@ class Model extends ChangeNotifier {
   /// A new link: forget what's live, keep the node and its history.
   void reset() {
     deviceInfo = null;
+    defaultScope = null;
+    foundAway = [];
     batteryMv = 0;
     contacts.clear();
     heard.clear();
@@ -174,6 +188,7 @@ class Model extends ChangeNotifier {
     lastRead.clear();
     floodAlways.clear();
     repeaterHistory.clear();
+    channelScopes.clear();
     if (await _file!.exists()) {
       try {
         final j = jsonDecode(await _file!.readAsString()) as Map<String, dynamic>;
@@ -185,11 +200,14 @@ class Model extends ChangeNotifier {
         floodAlways.addAll((j['flood'] as List? ?? []).cast<String>());
         (j['rstats'] as Map? ?? {}).forEach((k, v) => repeaterHistory[k] = [for (final r in v) (r as List).cast<num>()]);
         (j['channels'] as Map? ?? {}).forEach((k, v) => channels.putIfAbsent(int.parse(k), () => Channel(int.parse(k), v)));
+        (j['scopes'] as Map? ?? {}).forEach((k, v) => channelScopes[int.parse(k)] = ((v as List)[0] as String, v[1] as String));
       } catch (e) {
         debugPrint('history unreadable: $e');
       }
     }
     _nextId = messages.fold(0, (a, m) => math.max(a, m.id)) + 1;
+    firstSync = savedNames.isEmpty;
+    foundAway = [];
     notifyListeners();
   }
 
@@ -211,6 +229,7 @@ class Model extends ChangeNotifier {
       'flood': floodAlways.toList(),
       'rstats': repeaterHistory,
       'channels': {for (final c in channels.values) '${c.idx}': c.name},
+      'scopes': {for (final e in channelScopes.entries) '${e.key}': [e.value.$1, e.value.$2]},
     };
     try {
       final tmp = File('${f.path}.tmp');
@@ -247,6 +266,29 @@ class Model extends ChangeNotifier {
   void setAlwaysFlood(String prefixHex, bool on) {
     on ? floodAlways.add(prefixHex) : floodAlways.remove(prefixHex);
     _changed();
+  }
+
+  /// The scope messages on this channel go out with: "" for the node's
+  /// default, [noScope] for none, or a region name.
+  String channelScope(int idx) {
+    final ch = channels[idx];
+    final saved = channelScopes[idx];
+    return ch != null && saved != null && saved.$1 == ch.name ? saved.$2 : '';
+  }
+
+  void setChannelScope(int idx, String scope) {
+    final ch = channels[idx];
+    if (ch == null) return;
+    scope = scope == noScope ? scope : p.regionName(scope);
+    scope.isNotEmpty ? channelScopes[idx] = (ch.name, scope) : channelScopes.remove(idx);
+    _changed();
+  }
+
+  /// Nodes that joined the node's contact list while the app wasn't connected. Taken once.
+  List<p.Contact> takeFoundAway() {
+    final f = foundAway;
+    foundAway = [];
+    return f;
   }
 
   /// DM conversations, most recent first.
@@ -395,7 +437,9 @@ class Model extends ChangeNotifier {
         notifyListeners();
       case 'contact':
         final p.Contact c = f['contact'];
+        // A node the radio doesn't keep comes back as "new" at every advert, so check our own record too.
         final known = contacts.containsKey(c.prefixHex) || savedNames.containsKey(c.prefixHex);
+        if (!known && f['is_new'] != true && !firstSync) foundAway.add(c);
         contacts[c.prefixHex] = c;
         savedNames[c.prefixHex] = c.name;
         if (f['is_new'] == true) {
@@ -406,7 +450,11 @@ class Model extends ChangeNotifier {
           notifyListeners();
         }
       case 'contacts_end':
+        firstSync = false;
         _changed();
+      case 'default_scope':
+        defaultScope = p.regionName(f['name'] as String);
+        notifyListeners();
       case 'advert':
         final px = p.hex((f['key'] as Uint8List).sublist(0, p.keyPrefix));
         if (contacts.containsKey(px)) {

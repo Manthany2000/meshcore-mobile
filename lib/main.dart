@@ -1,23 +1,46 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:material_ui/material_ui.dart';
 
 import 'src/model.dart';
+import 'src/notify.dart';
+import 'src/prefs.dart';
+import 'src/protocol.dart' as p;
 import 'src/session.dart';
+import 'src/setup.dart' show isFresh;
 import 'src/sim.dart';
 import 'src/transport.dart';
+import 'src/ui/chat.dart';
+import 'src/ui/common.dart' show typeName;
 import 'src/ui/home.dart';
+import 'src/ui/logo.dart';
 import 'src/ui/map.dart' show MapRequest;
 
 void main(List<String> args) {
   FlutterBluePlus.setLogLevel(LogLevel.warning);
-  runApp(MeshCoreApp(autoSim: args.contains('--sim') || const bool.fromEnvironment('SIM')));
+  final fresh = args.contains('--sim-fresh') || const bool.fromEnvironment('SIM_FRESH');
+  final visitor = args.contains('--sim-visitor') || const bool.fromEnvironment('SIM_VISITOR');
+  final sim = fresh || visitor || args.contains('--sim') || const bool.fromEnvironment('SIM');
+  runApp(MeshCoreApp(autoSim: sim ? (fresh: fresh, visitor: visitor) : null));
 }
+
+/// The accent choices: the app's teal, and the ones MeshCore Desktop offers.
+const accents = {
+  'Teal': Color(0xFF14B8A6),
+  'Signal green': Color(0xFF3F7420),
+  'Amber': Color(0xFF8A5600),
+  'Radio red': Color(0xFFA32B22),
+  'Slate blue': Color(0xFF2F5B8A),
+};
 
 /// Owns the model and the current session, and reconnects when the link drops.
 class AppState extends ChangeNotifier {
-  final model = Model();
+  final Model model;
+  final Prefs prefs;
+  final notifier = Notifier();
+  bool foreground = true;
   Session? session;
   Transport Function()? _make;
   Timer? _retry;
@@ -26,8 +49,86 @@ class AppState extends ChangeNotifier {
   final navigator = GlobalKey<NavigatorState>();
   final tab = ValueNotifier<int>(0);
   final mapRequest = ValueNotifier<MapRequest?>(null);
+  /// Nodes the node added while the app wasn't connected; the home screen shows them once.
+  final foundAway = ValueNotifier<List<p.Contact>>([]);
+  /// Set when a just-flashed node connects: the home screen offers to set it up.
+  final offerSetup = ValueNotifier<bool>(false);
+  final _offered = <String>{};
 
   static const mapTab = 1;
+
+  /// [dataDir]: where history and settings live (tests pass a temp folder).
+  AppState({Future<Directory> Function()? dataDir})
+      : model = Model(dataDir: dataDir),
+        prefs = Prefs(dataDir: dataDir) {
+    model.incoming.stream.listen(_onMessage);
+    model.newContacts.stream.listen(_onNewContact);
+    notifier.onTap = openConv;
+  }
+
+  /// Settings and notifications; the splash shows until this is done.
+  Future<void> init() async {
+    await prefs.load();
+    await notifier.init();
+    final launch = notifier.launchPayload;
+    if (launch != null) pendingConv = launch;
+  }
+
+  String? pendingConv; // a chat to open once connected (from a notification)
+
+  void openConv(String conv) {
+    if (session?.state != LinkState.ready) {
+      pendingConv = conv;
+      return;
+    }
+    pendingConv = null;
+    final nav = navigator.currentState;
+    if (nav == null) return;
+    nav.popUntil((r) => r.isFirst);
+    tab.value = 0;
+    nav.push(MaterialPageRoute(builder: (_) => ChatScreen(app: this, conv: conv)));
+  }
+
+  bool get _notify => !foreground && prefs.notifications;
+
+  void _onMessage(Message m) {
+    if (m.outgoing || !_notify) return;
+    final me = model.selfInfo?.name ?? '';
+    final mentioned = me.isNotEmpty && m.text.contains('@[$me]');
+    // Channels: only when it's about us.
+    if (m.isChannel && !mentioned) return;
+    notifier.show(m.isChannel ? '${m.sender} in ${model.convTitle(m.conv)}' : m.sender, m.text, payload: m.conv);
+  }
+
+  void _onNewContact(p.Contact c) {
+    if (!_notify || session?.state != LinkState.ready) return;
+    final name = c.name.isEmpty ? c.prefixHex.substring(0, 6) : c.name;
+    final title = c.type == p.advRepeater ? 'New repeater found' : 'New contact found';
+    final kind = c.type == p.advRepeater || c.type == p.advChat ? '' : ' (${typeName(c.type)})';
+    notifier.show(title, '$name$kind');
+  }
+
+  /// Once the link is up: what happened while we were away, and a fresh node.
+  void _afterSync() {
+    // A real node: ask to notify. Not for the simulator, where the prompt would
+    // only get in the way of trying the app (the switch on the Node tab asks).
+    if (session?.t is! SimTransport) notifier.askPermission();
+    final found = model.takeFoundAway();
+    if (found.isNotEmpty) {
+      foundAway.value = found;
+      if (_notify) {
+        final names = [for (final c in found.take(5)) c.name.isEmpty ? c.prefixHex.substring(0, 6) : c.name].join(', ');
+        notifier.show('Found while you were away', names + (found.length > 5 ? ' and ${found.length - 5} more' : ''));
+      }
+    }
+    final si = model.selfInfo;
+    if (si != null && isFresh(si)) {
+      final k = p.hex(si.key.sublist(0, 4));
+      if (!prefs.noSetup.contains(k) && _offered.add(k)) offerSetup.value = true;
+    }
+    final conv = pendingConv;
+    if (conv != null) openConv(conv);
+  }
 
   /// Back to the tabs, on the Map, showing what was asked for.
   void showOnMap(MapRequest r) {
@@ -53,6 +154,7 @@ class AppState extends ChangeNotifier {
     try {
       await s.start();
       error = null;
+      _afterSync();
     } catch (e) {
       error = '$e'.replaceFirst('Bad state: ', '');
       await s.stop().catchError((_) {});
@@ -103,23 +205,34 @@ class AppState extends ChangeNotifier {
 }
 
 class MeshCoreApp extends StatefulWidget {
-  final bool autoSim;
-  const MeshCoreApp({super.key, this.autoSim = false});
+  final ({bool fresh, bool visitor})? autoSim;
+  final AppState? app; // tests bring their own
+  const MeshCoreApp({super.key, this.autoSim, this.app});
 
   @override
   State<MeshCoreApp> createState() => _MeshCoreAppState();
 }
 
 class _MeshCoreAppState extends State<MeshCoreApp> {
-  final app = AppState();
+  late final app = widget.app ?? AppState();
   late final AppLifecycleListener _life;
+  bool _loaded = false;
 
   @override
   void initState() {
     super.initState();
     // iOS can end a backgrounded app without warning: save on the way out.
-    _life = AppLifecycleListener(onPause: app.model.flush, onDetach: app.model.flush, onHide: app.model.flush);
-    if (widget.autoSim) app.connect(SimTransport.new);
+    _life = AppLifecycleListener(
+      onPause: app.model.flush,
+      onDetach: app.model.flush,
+      onHide: app.model.flush,
+      onStateChange: (s) => app.foreground = s == AppLifecycleState.resumed,
+    );
+    app.init().whenComplete(() {
+      if (mounted) setState(() => _loaded = true);
+    });
+    final sim = widget.autoSim;
+    if (sim != null) app.connect(simMaker(fresh: sim.fresh, visitor: sim.visitor));
   }
 
   @override
@@ -130,22 +243,39 @@ class _MeshCoreAppState extends State<MeshCoreApp> {
 
   @override
   Widget build(BuildContext context) {
-    ThemeData theme(Brightness b) => ThemeData(
-          colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF14B8A6), brightness: b),
-          useMaterial3: true,
+    return ListenableBuilder(
+      listenable: app.prefs,
+      builder: (context, _) {
+        final seed = accents[app.prefs.accent] ?? accents['Teal']!;
+        ThemeData theme(Brightness b) => ThemeData(
+              colorScheme: ColorScheme.fromSeed(seedColor: seed, brightness: b),
+              useMaterial3: true,
+            );
+        return MaterialApp(
+          navigatorKey: app.navigator,
+          title: 'MeshCore Mobile',
+          debugShowCheckedModeBanner: false,
+          theme: theme(Brightness.light),
+          darkTheme: theme(Brightness.dark),
+          home: Splash(
+            ready: _loaded,
+            child: ListenableBuilder(
+              listenable: app,
+              builder: (context, _) =>
+                  app.model.selfInfo != null && app.linked ? HomeScreen(app: app) : ConnectScreen(app: app),
+            ),
+          ),
         );
-    return MaterialApp(
-      navigatorKey: app.navigator,
-      title: 'MeshCore Mobile',
-      debugShowCheckedModeBanner: false,
-      theme: theme(Brightness.light),
-      darkTheme: theme(Brightness.dark),
-      home: ListenableBuilder(
-        listenable: app,
-        builder: (context, _) => app.model.selfInfo != null && app.linked ? HomeScreen(app: app) : ConnectScreen(app: app),
-      ),
+      },
     );
   }
+}
+
+/// One simulated node for the whole run, so what it's told (a new name, a PIN)
+/// is still there when the app reconnects after a restart.
+Transport Function() simMaker({bool fresh = false, bool visitor = false}) {
+  final t = SimTransport(fresh: fresh, visitor: visitor);
+  return () => t;
 }
 
 class ConnectScreen extends StatefulWidget {
@@ -262,11 +392,23 @@ class _ConnectScreenState extends State<ConnectScreen> {
                 ),
               ),
             const SizedBox(height: 24),
-            OutlinedButton.icon(
-              onPressed: () => app.connect(SimTransport.new),
-              icon: const Icon(Icons.science_outlined),
-              label: const Text('Try the simulator'),
-            ),
+            Row(children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => app.connect(simMaker()),
+                  icon: const Icon(Icons.science_outlined),
+                  label: const Text('Try the simulator'),
+                ),
+              ),
+              PopupMenuButton<String>(
+                tooltip: 'Other simulations',
+                onSelected: (v) => app.connect(simMaker(fresh: v == 'fresh', visitor: v == 'visitor')),
+                itemBuilder: (_) => const [
+                  PopupMenuItem(value: 'fresh', child: Text('A freshly flashed node')),
+                  PopupMenuItem(value: 'visitor', child: Text('A node that heard someone new')),
+                ],
+              ),
+            ]),
           ],
         ],
       ),
