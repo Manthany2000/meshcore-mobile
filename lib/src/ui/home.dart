@@ -16,6 +16,7 @@ import 'dashboard.dart';
 import 'map.dart';
 import 'node_form.dart';
 import 'scope.dart';
+import 'settings.dart';
 
 export '../setup.dart' show hashtagSecret;
 
@@ -133,7 +134,7 @@ class _HomeScreenState extends State<HomeScreen> {
         final unread = [for (final c in m.channels.keys) chanConv(c), ...m.dmConvs()].fold(0, (a, c) => a + m.unread(c));
         return Scaffold(
           appBar: AppBar(
-            title: Text(m.selfInfo?.name ?? 'MeshCore'),
+            title: Text(m.selfInfo?.name ?? appName),
             actions: [
               if (m.batteryMv > 0)
                 Padding(
@@ -144,6 +145,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     Text('${p.battPercent(m.batteryMv)}%'),
                   ]),
                 ),
+              settingsButton(context, app),
             ],
             bottom: s != null && s.state != LinkState.ready
                 ? PreferredSize(preferredSize: const Size.fromHeight(32), child: _LinkBanner(app: app))
@@ -571,57 +573,6 @@ class NodeTab extends StatelessWidget {
             ),
         ]),
       ),
-      Card(
-        child: ListenableBuilder(
-          listenable: app.prefs,
-          builder: (context, _) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const ListTile(leading: Icon(Icons.palette_outlined), title: Text('Accent colour')),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-              child: Wrap(spacing: 8, runSpacing: 8, children: [
-                for (final e in accents.entries)
-                  ChoiceChip(
-                    avatar: CircleAvatar(backgroundColor: e.value, radius: 8),
-                    label: Text(e.key),
-                    selected: app.prefs.accent == e.key,
-                    onSelected: (_) {
-                      app.prefs.accent = e.key;
-                      app.prefs.save();
-                    },
-                  ),
-              ]),
-            ),
-            SwitchListTile(
-              secondary: const Icon(Icons.notifications_outlined),
-              title: const Text('Notifications'),
-              subtitle: const Text('Direct messages, @mentions and new nodes while the app is in the background'),
-              value: app.prefs.notifications,
-              onChanged: (v) async {
-                app.prefs.notifications = v;
-                app.prefs.save();
-                if (!v) return;
-                final ok = await app.notifier.enable();
-                if (ok == false && context.mounted) _notificationsOff(context);
-              },
-            ),
-            if (app.prefs.notifications)
-              ListTile(
-                leading: const SizedBox(width: 24),
-                title: const Text('Send a test notification'),
-                subtitle: const Text('Shows in a few seconds: lock the phone or switch apps to see it as it would arrive'),
-                onTap: () async {
-                  final ok = await app.notifier.allowed();
-                  if (!context.mounted) return;
-                  if (ok == false) return _notificationsOff(context);
-                  ScaffoldMessenger.of(context)
-                      .showSnackBar(const SnackBar(content: Text('Test notification in 5 seconds')));
-                  Timer(const Duration(seconds: 5),
-                      () => app.notifier.show('MeshCore', 'Notifications are working'));
-                },
-              ),
-          ]),
-        ),
-      ),
       const SizedBox(height: 8),
       OutlinedButton.icon(
         onPressed: app.disconnect,
@@ -630,16 +581,6 @@ class NodeTab extends StatelessWidget {
       ),
     ]);
   }
-
-  void _notificationsOff(BuildContext context) => showDialog(
-        context: context,
-        builder: (c) => AlertDialog(
-          title: const Text('Notifications are off'),
-          content: const Text('The phone is blocking notifications from MeshCore. Turn them on in '
-              'Settings › Notifications › MeshCore (on Android: Settings › Apps › MeshCore › Notifications).'),
-          actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('OK'))],
-        ),
-      );
 
   Widget _kv(String k, String v) => ListTile(
         dense: true,

@@ -91,6 +91,10 @@ void main() {
         await Future.delayed(const Duration(seconds: 2));
       });
       await settle(1);
+      await tap(find.byTooltip('Settings'));
+      await shot('settings');
+      await back();
+      await settle(1);
       await tap(find.text('Node'));
       await shot('node-tab');
       await tester.drag(find.byType(ListView).last, const Offset(0, -600));

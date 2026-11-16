@@ -1,4 +1,4 @@
-# MeshCore Mobile
+# Full Metal Mesh
 
 A phone chat app for a MeshCore node running companion firmware, over Bluetooth LE. The iPhone and Android
 companion to [MeshCore Desktop](https://github.com/Manthany2000/meshcore-desktop), built with Flutter and speaking
@@ -63,7 +63,7 @@ USB serial isn't available: iPhones don't allow it without Apple's accessory pro
 
 Each push to `main` builds an unsigned `.ipa` on GitHub Actions (macOS runner). To put it on your phone:
 
-1. Download **MeshCore-Mobile-ios** from the latest run on the Actions tab (or the `.ipa` on a release).
+1. Download **Full-Metal-Mesh-ios** from the latest run on the Actions tab (or the `.ipa` on a release).
 2. Sideload it with [Sideloadly](https://sideloadly.io) (Windows/macOS) or AltStore, signing with your Apple ID.
    A free Apple ID's signature lasts 7 days, then re-sideload; a paid developer account lasts a year.
 3. On the phone: Settings → General → VPN & Device Management → trust your Apple ID. On iOS 16+, also turn on
@@ -73,7 +73,7 @@ The first time you connect, iOS asks for the node's Bluetooth PIN itself.
 
 ## Android
 
-The same workflow builds `MeshCore-Mobile.apk`; install it directly.
+The same workflow builds `Full-Metal-Mesh.apk`; install it directly.
 
 ## Developing
 

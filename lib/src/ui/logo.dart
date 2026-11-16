@@ -111,10 +111,10 @@ class _SplashState extends State<Splash> with TickerProviderStateMixin {
                 FadeTransition(
                   opacity: CurvedAnimation(parent: _draw, curve: const Interval(0.5, 1, curve: Curves.easeOut)),
                   child: const Column(children: [
-                    Text('MeshCore',
+                    Text('Full Metal Mesh',
                         style: TextStyle(color: Colors.white, fontSize: 30, fontWeight: FontWeight.w700, letterSpacing: 0.5)),
                     SizedBox(height: 4),
-                    Text('MOBILE', style: TextStyle(color: Color(0xCCFFFFFF), fontSize: 13, letterSpacing: 4)),
+                    Text('FOR MESHCORE', style: TextStyle(color: Color(0xCCFFFFFF), fontSize: 13, letterSpacing: 4)),
                   ]),
                 ),
               ]),

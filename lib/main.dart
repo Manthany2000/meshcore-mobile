@@ -6,6 +6,7 @@ import 'package:material_ui/material_ui.dart';
 
 import 'src/model.dart';
 import 'src/notify.dart';
+import 'src/ui/settings.dart';
 import 'src/prefs.dart';
 import 'src/protocol.dart' as p;
 import 'src/session.dart';
@@ -27,6 +28,9 @@ void main(List<String> args) {
 }
 
 /// The accent choices: the app's teal, and the ones MeshCore Desktop offers.
+const appName = 'Full Metal Mesh';
+const appVersion = '0.4.0';
+
 const accents = {
   'Teal': Color(0xFF14B8A6),
   'Signal green': Color(0xFF3F7420),
@@ -96,12 +100,12 @@ class AppState extends ChangeNotifier {
     final me = model.selfInfo?.name ?? '';
     final mentioned = me.isNotEmpty && m.text.contains('@[$me]');
     // Channels: only when it's about us.
-    if (m.isChannel && !mentioned) return;
+    if (m.isChannel ? !(mentioned && prefs.notifyMentions) : !prefs.notifyDms) return;
     notifier.show(m.isChannel ? '${m.sender} in ${model.convTitle(m.conv)}' : m.sender, m.text, payload: m.conv);
   }
 
   void _onNewContact(p.Contact c) {
-    if (!_notify || session?.state != LinkState.ready) return;
+    if (!_notify || !prefs.notifyNodes || session?.state != LinkState.ready) return;
     final name = c.name.isEmpty ? c.prefixHex.substring(0, 6) : c.name;
     final title = c.type == p.advRepeater ? 'New repeater found' : 'New contact found';
     final kind = c.type == p.advRepeater || c.type == p.advChat ? '' : ' (${typeName(c.type)})';
@@ -116,7 +120,7 @@ class AppState extends ChangeNotifier {
     final found = model.takeFoundAway();
     if (found.isNotEmpty) {
       foundAway.value = found;
-      if (_notify) {
+      if (_notify && prefs.notifyNodes) {
         final names = [for (final c in found.take(5)) c.name.isEmpty ? c.prefixHex.substring(0, 6) : c.name].join(', ');
         notifier.show('Found while you were away', names + (found.length > 5 ? ' and ${found.length - 5} more' : ''));
       }
@@ -261,10 +265,11 @@ class _MeshCoreAppState extends State<MeshCoreApp> {
             );
         return MaterialApp(
           navigatorKey: app.navigator,
-          title: 'MeshCore Mobile',
+          title: appName,
           debugShowCheckedModeBanner: false,
           theme: theme(Brightness.light),
           darkTheme: theme(Brightness.dark),
+          themeMode: switch (app.prefs.theme) { 'Light' => ThemeMode.light, 'Dark' => ThemeMode.dark, _ => ThemeMode.system },
           home: Splash(
             ready: _loaded,
             child: ListenableBuilder(
@@ -325,7 +330,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
           .where((s) => s != BluetoothAdapterState.unknown)
           .first
           .timeout(const Duration(seconds: 3), onTimeout: () => BluetoothAdapterState.unknown);
-      if (st == BluetoothAdapterState.unauthorized) throw 'Allow Bluetooth for MeshCore Mobile in Settings';
+      if (st == BluetoothAdapterState.unauthorized) throw 'Allow Bluetooth for $appName in Settings';
       if (st == BluetoothAdapterState.off) throw 'Bluetooth is off';
       _sub = scan().listen((l) {
         if (mounted) setState(() => found = l);
@@ -350,7 +355,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
     final cs = Theme.of(context).colorScheme;
     final busy = app.linked;
     return Scaffold(
-      appBar: AppBar(title: const Text('MeshCore Mobile')),
+      appBar: AppBar(title: const Text(appName), actions: [settingsButton(context, app)]),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -428,7 +433,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
 String _bleProblem(Object e) {
   final t = '$e';
   if (t.contains('Unsupported')) return "This device has no Bluetooth LE (a simulator?). Try the simulator below.";
-  if (t.contains('Unauthorized') || t.contains('unauthorized')) return 'Allow Bluetooth for MeshCore Mobile in Settings.';
+  if (t.contains('Unauthorized') || t.contains('unauthorized')) return 'Allow Bluetooth for $appName in Settings.';
   if (t.contains('turned on') || t.contains('PoweredOff')) return 'Bluetooth is off. Turn it on and scan again.';
   return t.startsWith('PlatformException(') ? 'Couldn\'t scan: ${t.split(', ').skip(1).first}' : t;
 }
