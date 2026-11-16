@@ -31,10 +31,11 @@ void main(List<String> args) {
 const appName = 'Full Metal Mesh';
 /// Under the icon and in the phone's Settings (Info.plist, AndroidManifest.xml).
 const iconName = 'FM Mesh';
-const appVersion = '0.4.0';
+const appVersion = '0.4.1';
 
 const accents = {
   'Teal': Color(0xFF14B8A6),
+  'Olive drab': Color(0xFF5B6B2A),
   'Signal green': Color(0xFF3F7420),
   'Amber': Color(0xFF8A5600),
   'Radio red': Color(0xFFA32B22),
@@ -274,6 +275,7 @@ class _MeshCoreAppState extends State<MeshCoreApp> {
           themeMode: switch (app.prefs.theme) { 'Light' => ThemeMode.light, 'Dark' => ThemeMode.dark, _ => ThemeMode.system },
           home: Splash(
             ready: _loaded,
+            version: appVersion,
             child: ListenableBuilder(
               listenable: app,
               builder: (context, _) =>

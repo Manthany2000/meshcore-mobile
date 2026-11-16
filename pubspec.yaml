@@ -16,7 +16,7 @@ publish_to: 'none' # Remove this line if you wish to publish to pub.dev
 # https://developer.apple.com/library/archive/documentation/General/Reference/InfoPlistKeyReference/Articles/CoreFoundationKeys.html
 # In Windows, build-name is used as the major, minor, and patch parts
 # of the product and file versions while build-number is used as the build suffix.
-version: 0.4.0+5
+version: 0.4.1+6
 
 environment:
   sdk: ^3.14.0
@@ -67,6 +67,15 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
+  # The splash's lettering (SIL Open Font License, see assets/fonts/OFL-*.txt).
+  fonts:
+    - family: BlackOpsOne
+      fonts:
+        - asset: assets/fonts/BlackOpsOne-Regular.ttf
+    - family: ShareTechMono
+      fonts:
+        - asset: assets/fonts/ShareTechMono-Regular.ttf
+
   # To add assets to your application, add an assets section, like this:
   # assets:
   #   - images/a_dot_burr.jpeg
@@ -98,14 +107,14 @@ flutter:
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
 
-# The launch screen before Flutter starts: the mark on teal, the same as the
-# in-app splash (lib/src/ui/logo.dart). Regenerate with
-#   dart run flutter_native_splash:create
+# The launch screen before Flutter starts: the radar scope on olive black,
+# where the in-app splash (lib/src/ui/logo.dart) picks up. The images come from
+#   python3 tool/splash.py && dart run flutter_native_splash:create
 flutter_native_splash:
-  color: "#0F766E"
+  color: "#14180F"
   image: assets/splash/logo.png
   android_12:
-    color: "#0F766E"
+    color: "#14180F"
     image: assets/splash/logo_android12.png
   ios: true
   android: true

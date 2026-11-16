@@ -26,6 +26,11 @@ Future<void> _fonts() async {
 
   await load('Roboto', ['Roboto-Regular.ttf', 'Roboto-Medium.ttf', 'Roboto-Bold.ttf']);
   await load('MaterialIcons', ['MaterialIcons-Regular.otf']);
+  // The app's own (the splash): flutter test doesn't load pubspec fonts itself.
+  for (final (family, file) in [('BlackOpsOne', 'BlackOpsOne-Regular.ttf'), ('ShareTechMono', 'ShareTechMono-Regular.ttf')]) {
+    final l = FontLoader(family)..addFont(Future.value(ByteData.sublistView(File('assets/fonts/$file').readAsBytesSync())));
+    await l.load();
+  }
 }
 
 void main() {
@@ -80,7 +85,12 @@ void main() {
       }
 
       await tester.pumpWidget(RepaintBoundary(key: key, child: MeshCoreApp(app: app)));
-      await tester.pump(const Duration(milliseconds: 700));
+      // The splash as it plays: contacts ping in, links draw, the title lands.
+      await tester.pump(const Duration(milliseconds: 450));
+      await shot('splash-a');
+      await tester.pump(const Duration(milliseconds: 600));
+      await shot('splash-b');
+      await tester.pump(const Duration(milliseconds: 750));
       await shot('splash');
       await settle(1.5);
       await shot('connect');
