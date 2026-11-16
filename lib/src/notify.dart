@@ -61,6 +61,27 @@ class Notifier {
     }
   }
 
+  /// Whether the system will show our notifications. null: can't tell.
+  Future<bool?> allowed() async {
+    if (!_ready) return null;
+    try {
+      final ios = _plugin.resolvePlatformSpecificImplementation<IOSFlutterLocalNotificationsPlugin>();
+      if (ios != null) return (await ios.checkPermissions())?.isEnabled;
+      final android = _plugin.resolvePlatformSpecificImplementation<AndroidFlutterLocalNotificationsPlugin>();
+      if (android != null) return await android.areNotificationsEnabled();
+    } catch (e) {
+      debugPrint('notification permission: $e');
+    }
+    return null;
+  }
+
+  /// Asks again (the switch was turned on), then reports whether it's allowed.
+  Future<bool?> enable() async {
+    _asked = false;
+    await askPermission();
+    return allowed();
+  }
+
   Future<void> show(String title, String body, {String? payload}) async {
     if (!_ready) return;
     try {

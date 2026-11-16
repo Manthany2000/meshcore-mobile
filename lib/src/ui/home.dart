@@ -596,12 +596,29 @@ class NodeTab extends StatelessWidget {
               title: const Text('Notifications'),
               subtitle: const Text('Direct messages, @mentions and new nodes while the app is in the background'),
               value: app.prefs.notifications,
-              onChanged: (v) {
+              onChanged: (v) async {
                 app.prefs.notifications = v;
                 app.prefs.save();
-                if (v) app.notifier.askPermission();
+                if (!v) return;
+                final ok = await app.notifier.enable();
+                if (ok == false && context.mounted) _notificationsOff(context);
               },
             ),
+            if (app.prefs.notifications)
+              ListTile(
+                leading: const SizedBox(width: 24),
+                title: const Text('Send a test notification'),
+                subtitle: const Text('Shows in a few seconds: lock the phone or switch apps to see it as it would arrive'),
+                onTap: () async {
+                  final ok = await app.notifier.allowed();
+                  if (!context.mounted) return;
+                  if (ok == false) return _notificationsOff(context);
+                  ScaffoldMessenger.of(context)
+                      .showSnackBar(const SnackBar(content: Text('Test notification in 5 seconds')));
+                  Timer(const Duration(seconds: 5),
+                      () => app.notifier.show('MeshCore', 'Notifications are working'));
+                },
+              ),
           ]),
         ),
       ),
@@ -613,6 +630,16 @@ class NodeTab extends StatelessWidget {
       ),
     ]);
   }
+
+  void _notificationsOff(BuildContext context) => showDialog(
+        context: context,
+        builder: (c) => AlertDialog(
+          title: const Text('Notifications are off'),
+          content: const Text('The phone is blocking notifications from MeshCore. Turn them on in '
+              'Settings › Notifications › MeshCore (on Android: Settings › Apps › MeshCore › Notifications).'),
+          actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('OK'))],
+        ),
+      );
 
   Widget _kv(String k, String v) => ListTile(
         dense: true,

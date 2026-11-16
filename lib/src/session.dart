@@ -111,8 +111,10 @@ class Session extends ChangeNotifier {
 
   Future<void> start() async {
     _state(LinkState.connecting);
-    model.reset();
     await t.connect();
+    // Only now: a reconnect can wait a long time for the node, and the last
+    // contacts stay on screen meanwhile.
+    model.reset();
     connected = true;
     _state(LinkState.syncing, 'node info');
     if (await request(p.appStart(), {'self_info'}) == null) {

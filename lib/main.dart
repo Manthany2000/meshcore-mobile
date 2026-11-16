@@ -143,11 +143,16 @@ class AppState extends ChangeNotifier {
     await _open();
   }
 
-  Future<void> _open() async {
+  Future<void> _open({bool patient = false}) async {
     _retry?.cancel();
     _retry = null;
-    session?.removeListener(_onSession);
-    final s = Session(model, _make!());
+    final old = session;
+    old?.removeListener(_onSession);
+    // A patient reconnect may still be waiting for the node: end it first.
+    if (old != null && old.state == LinkState.connecting) await old.stop().catchError((_) {});
+    if (_make == null) return;
+    final t = _make!()..patient = patient;
+    final s = Session(model, t);
     session = s;
     s.addListener(_onSession);
     notifyListeners();
@@ -156,6 +161,7 @@ class AppState extends ChangeNotifier {
       error = null;
       _afterSync();
     } catch (e) {
+      if (session != s) return; // disconnected, or replaced, meanwhile
       error = '$e'.replaceFirst('Bad state: ', '');
       await s.stop().catchError((_) {});
       if (model.selfInfo == null) {
@@ -177,9 +183,11 @@ class AppState extends ChangeNotifier {
 
   void _scheduleRetry() {
     _retry?.cancel();
-    _retry = Timer(const Duration(seconds: 5), () {
+    // In the background iOS may suspend us within seconds, so start the
+    // reconnect straight away there; it waits for the node by itself.
+    _retry = Timer(Duration(seconds: foreground ? 5 : 0), () {
       _retry = null;
-      if (_make != null) _open();
+      if (_make != null) _open(patient: true);
     });
   }
 

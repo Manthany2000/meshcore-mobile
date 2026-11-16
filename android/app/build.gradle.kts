@@ -6,7 +6,7 @@ plugins {
 
 android {
     namespace = "io.github.manthany2000.meshcore_mobile"
-    compileSdk = flutter.compileSdkVersion
+    compileSdk = 37
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

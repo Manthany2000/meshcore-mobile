@@ -1,5 +1,6 @@
 // The link to a node: BLE (flutter_blue_plus), or the simulator.
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
@@ -10,6 +11,9 @@ abstract class Transport {
   void Function(Uint8List frame) onFrame = (_) {};
   void Function() onDisconnect = () {};
   String get label;
+  /// A reconnect after the link dropped: wait as long as it takes for the node
+  /// to come back, rather than giving up after a timeout.
+  bool patient = false;
   Future<void> connect();
   Future<void> write(Uint8List frame);
   Future<void> close();
@@ -49,6 +53,7 @@ class BleTransport extends Transport {
   final String name;
   BluetoothCharacteristic? _rx;
   StreamSubscription? _notify, _state;
+  Completer<void>? _waiting; // a patient connect, until the node is back
   BleTransport(this.device, this.name);
 
   @override
@@ -59,7 +64,19 @@ class BleTransport extends Transport {
     await FlutterBluePlus.stopScan();
     // On iOS the system shows the PIN prompt itself the first time we touch
     // the encrypted characteristics.
-    await device.connect(license: License.nonprofit, timeout: const Duration(seconds: 20), mtu: null);
+    if (patient && Platform.isIOS) {
+      // iOS keeps an auto-connect pending with no time limit and wakes the app
+      // when the node is back in range, even while it's in the background, so
+      // notifications keep coming after the link drops.
+      final w = _waiting = Completer<void>();
+      final up = device.connectionState.where((s) => s == BluetoothConnectionState.connected).first;
+      await device.connect(license: License.nonprofit, autoConnect: true, mtu: null);
+      await Future.any([up, w.future]);
+      _waiting = null;
+      if (w.isCompleted) throw StateError('Cancelled');
+    } else {
+      await device.connect(license: License.nonprofit, timeout: const Duration(seconds: 20), mtu: null);
+    }
     _state = device.connectionState.listen((s) {
       if (s == BluetoothConnectionState.disconnected) onDisconnect();
     });
@@ -85,6 +102,8 @@ class BleTransport extends Transport {
 
   @override
   Future<void> close() async {
+    final w = _waiting;
+    if (w != null && !w.isCompleted) w.complete();
     await _state?.cancel();
     await _notify?.cancel();
     await device.disconnect();
