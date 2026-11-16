@@ -130,7 +130,7 @@ void notificationsOff(BuildContext context) => showDialog(
       builder: (c) => AlertDialog(
         title: const Text('Notifications are off'),
         content: const Text('The phone is blocking notifications from $appName. Turn them on in '
-            'Settings › Notifications › $appName (on Android: Settings › Apps › $appName › Notifications).'),
+            'Settings › Notifications › $iconName (on Android: Settings › Apps › $iconName › Notifications).'),
         actions: [TextButton(onPressed: () => Navigator.pop(c), child: const Text('OK'))],
       ),
     );

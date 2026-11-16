@@ -29,6 +29,8 @@ void main(List<String> args) {
 
 /// The accent choices: the app's teal, and the ones MeshCore Desktop offers.
 const appName = 'Full Metal Mesh';
+/// Under the icon and in the phone's Settings (Info.plist, AndroidManifest.xml).
+const iconName = 'FM Mesh';
 const appVersion = '0.4.0';
 
 const accents = {
@@ -330,7 +332,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
           .where((s) => s != BluetoothAdapterState.unknown)
           .first
           .timeout(const Duration(seconds: 3), onTimeout: () => BluetoothAdapterState.unknown);
-      if (st == BluetoothAdapterState.unauthorized) throw 'Allow Bluetooth for $appName in Settings';
+      if (st == BluetoothAdapterState.unauthorized) throw 'Allow Bluetooth for $iconName in Settings';
       if (st == BluetoothAdapterState.off) throw 'Bluetooth is off';
       _sub = scan().listen((l) {
         if (mounted) setState(() => found = l);
@@ -433,7 +435,7 @@ class _ConnectScreenState extends State<ConnectScreen> {
 String _bleProblem(Object e) {
   final t = '$e';
   if (t.contains('Unsupported')) return "This device has no Bluetooth LE (a simulator?). Try the simulator below.";
-  if (t.contains('Unauthorized') || t.contains('unauthorized')) return 'Allow Bluetooth for $appName in Settings.';
+  if (t.contains('Unauthorized') || t.contains('unauthorized')) return 'Allow Bluetooth for $iconName in Settings.';
   if (t.contains('turned on') || t.contains('PoweredOff')) return 'Bluetooth is off. Turn it on and scan again.';
   return t.startsWith('PlatformException(') ? 'Couldn\'t scan: ${t.split(', ').skip(1).first}' : t;
 }
